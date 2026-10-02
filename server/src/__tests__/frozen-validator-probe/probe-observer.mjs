@@ -1,5 +1,5 @@
 /**
- * Frozen-validator Q probe — disposable observer / entrypoint (THE-574).
+ * Frozen-validator Q probe — disposable observer / entrypoint (THE-574, F″ correction).
  *
  * SOURCE-ONLY PROPOSAL. Not installable authority and not a runtime PASS. The
  * canonical Q token in the accepted packet top-level argv is this file:
@@ -8,11 +8,17 @@
  *
  * Modes: normal-close | bootstrap-kill | worker-smoke. Built-ins only. No
  * product/Git/DB/provider/network import, no shell, no live-process killing.
- * Max 4 disposable Node processes, hard 10s, self-expiry 3s (defense-in-depth),
- * observation 750ms before self-expiry, TERM/KILL 500ms, awaited <=2s reap and
- * stdio close. Output <=1MiB, row <=64KiB, owned disk scratch <=4MiB. Unknown
- * ownership, timeout, missing-ready or residual state fails closed. Observer
- * rescue is recorded separately and NEVER counts as positive containment.
+ *
+ * F″ corrections (THE-575 adverse rows): all post-spawn failure/timeout paths
+ * fail closed AND complete owned-graph cleanup with awaited reap/pipe closure
+ * inside the one bound; recorded processes are bound to PID/starttime/current
+ * PGID and explicit ancestry/owned scope; owned group membership is discovered
+ * from /proc independently of a live group leader; terminal requires no live
+ * owned descendant AND stdio close; one absolute <=2s reap deadline (not
+ * cumulative); enforced 4MiB owned scratch / 64KiB UTF-8 row / 1MiB aggregate
+ * output (including supervisor channels) / max4 processes; worker-smoke requires
+ * the ordered start/started/run/testfileFinished IPC lifecycle. Rescue is
+ * recorded separately and NEVER counts as positive containment.
  */
 
 import { spawn } from "node:child_process";
@@ -30,7 +36,6 @@ const LIMITS = Object.freeze({
   observeBeforeExpiryMs: 750,
   termKillGraceMs: 500,
   reapDeadlineMs: 2000,
-  stdioDeadlineMs: 2000,
   maxOutputBytes: 1048576,
   maxRowBytes: 65536,
   maxScratchBytes: 4194304,
@@ -50,9 +55,22 @@ if (!MODES.has(mode)) {
   process.exit(2);
 }
 
-/* ------------------------------- bounded rows ---------------------------- */
+class ProbeFail extends Error {
+  constructor(code, extra = {}) {
+    super(code);
+    this.name = "ProbeFail";
+    this.code = code;
+    this.extra = extra;
+  }
+}
+
+/* ------------------------------- accounting ------------------------------ */
 const rowLines = [];
 let rowBytes = 0;
+let channelBytes = 0;
+let pendingFailure = null;
+const hardDeadlineAt = Date.now() + LIMITS.hardTimeoutMs;
+
 function record(row) {
   let line;
   try {
@@ -60,14 +78,27 @@ function record(row) {
   } catch {
     line = JSON.stringify({ type: "row-serialize-error" });
   }
-  if (line.length + 1 > LIMITS.maxRowBytes) {
-    return fail("ROW_CEILING", { rowType: row?.type ?? null });
+  const bytes = Buffer.byteLength(line, "utf8");
+  if (bytes > LIMITS.maxRowBytes) throw new ProbeFail("ROW_CEILING", { rowType: row?.type ?? null });
+  if (rowBytes + channelBytes + bytes > LIMITS.maxOutputBytes) {
+    throw new ProbeFail("OUTPUT_CEILING", { rowType: row?.type ?? null });
   }
-  rowBytes += line.length + 1;
-  if (rowBytes > LIMITS.maxOutputBytes) {
-    return fail("OUTPUT_CEILING", { rowType: row?.type ?? null });
-  }
+  rowBytes += bytes;
   rowLines.push(line);
+}
+function safeRecord(row) {
+  try {
+    record(row);
+  } catch (error) {
+    if (error instanceof ProbeFail) pendingFailure = error;
+    else throw error;
+  }
+}
+function accountChannel(chunk) {
+  channelBytes += chunk.length;
+  if (rowBytes + channelBytes > LIMITS.maxOutputBytes) {
+    if (!pendingFailure) pendingFailure = new ProbeFail("OUTPUT_CEILING", { source: "channel" });
+  }
 }
 
 /* ------------------------------- scratch --------------------------------- */
@@ -121,75 +152,156 @@ function procStat(pid) {
     starttime: fields[19],
   };
 }
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function groupAlive(pgid) {
-  if (!Number.isSafeInteger(pgid) || pgid <= 0) return false;
-  try {
-    process.kill(-pgid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function procList() {
+  let entries;
+  try {
+    entries = fs.readdirSync("/proc");
+  } catch {
+    return [];
+  }
+  return entries.filter((name) => /^[0-9]+$/.test(name)).map((name) => Number.parseInt(name, 10));
+}
 
-/* Owned records are the only PIDs the observer may ever signal. */
+/* Explicit owned scope: recorded PID/starttime/PGID + /proc group discovery. */
 const owned = new Map();
-function remember(role, pid) {
+const ownedGroups = new Set();
+let unknownOwnership = false;
+let minOwnedStarttime = null;
+
+function remember(role, pid, expectedParentPid = null) {
   const stat = procStat(pid);
   if (!stat) {
     unknownOwnership = true;
-    record({ type: "unknown-ownership", role, pid: Number.isSafeInteger(pid) ? pid : null });
+    safeRecord({ type: "unknown-ownership", role, pid: Number.isSafeInteger(pid) ? pid : null });
+    return null;
+  }
+  if (expectedParentPid !== null && stat.ppid !== expectedParentPid) {
+    unknownOwnership = true;
+    safeRecord({ type: "ancestry-mismatch", role, pid, expectedParentPid, ppid: stat.ppid });
     return null;
   }
   const entry = { role, pid, ppid: stat.ppid, pgid: stat.pgid, starttime: stat.starttime };
   owned.set(pid, entry);
+  ownedGroups.add(stat.pgid);
+  minOwnedStarttime = minOwnedStarttime === null ? stat.starttime : String(Math.min(Number(minOwnedStarttime), Number(stat.starttime)));
   return entry;
 }
-function signalOwned(pid, signal, { onlyPid = false } = {}) {
+function ancestryOwned(pid) {
+  let current = pid;
+  for (let depth = 0; depth < 12 && current > 1; depth += 1) {
+    const stat = procStat(current);
+    if (!stat) return false;
+    if (owned.has(current)) return true;
+    current = stat.ppid;
+  }
+  return false;
+}
+function adoptMember(member) {
+  const entry = { role: "owned-group-member", ...member };
+  owned.set(member.pid, entry);
+  return entry;
+}
+function liveOwned() {
+  if (pendingFailure) throw pendingFailure;
+  const live = [];
+  for (const [pid, entry] of owned.entries()) {
+    const now = procStat(pid);
+    if (now && now.starttime === entry.starttime) live.push(entry);
+  }
+  for (const pgid of ownedGroups) {
+    for (const pid of procList()) {
+      if (owned.has(pid)) continue;
+      const stat = procStat(pid);
+      if (!stat || stat.pgid !== pgid) continue;
+      /* Owned scope: group membership started at/after the recorded leader. */
+      if (minOwnedStarttime !== null && stat.starttime < minOwnedStarttime) {
+        unknownOwnership = true;
+        safeRecord({ type: "stale-group-member", pid, pgid, starttime: stat.starttime, minOwnedStarttime });
+        continue;
+      }
+      if (ancestryOwned(pid) || stat.starttime >= (minOwnedStarttime ?? stat.starttime)) {
+        live.push(adoptMember({ pid, ppid: stat.ppid, pgid: stat.pgid, starttime: stat.starttime }));
+      }
+    }
+  }
+  if (owned.size > LIMITS.maxProcesses) {
+    throw new ProbeFail("PROCESS_CEILING", { processCount: owned.size });
+  }
+  return live;
+}
+function liveOwnedSafe() {
+  try {
+    return liveOwned();
+  } catch (error) {
+    if (!pendingFailure) pendingFailure = error;
+    return [];
+  }
+}
+function signalPidOnly(pid, signal) {
   const entry = owned.get(pid);
   if (!entry) return false;
   const now = procStat(pid);
-  if (!now || now.starttime !== entry.starttime) return false;
-  const target = onlyPid || entry.pgid !== pid ? pid : -entry.pgid;
+  if (!now || now.starttime !== entry.starttime || now.pgid !== entry.pgid) return false;
   try {
-    process.kill(target, signal);
+    process.kill(pid, signal);
     return true;
   } catch {
     return false;
   }
 }
-function survivors() {
-  const live = [];
-  for (const [pid, entry] of owned.entries()) {
-    const now = procStat(pid);
-    if (now && now.starttime === entry.starttime && groupAlive(entry.pgid)) {
-      live.push({ role: entry.role, pid, pgid: entry.pgid, starttime: entry.starttime });
+function killOwnedGroups() {
+  const groups = new Set();
+  for (const entry of owned.values()) groups.add(entry.pgid);
+  for (const pgid of ownedGroups) groups.add(pgid);
+  for (const pgid of groups) {
+    try {
+      process.kill(-pgid, "SIGKILL");
+    } catch {
+      /* group already gone */
     }
   }
-  return live;
 }
 
-let unknownOwnership = false;
+let activeStreams = [];
+function streamsClosed(streams) {
+  if (!Array.isArray(streams) || streams.length === 0) return true;
+  return streams.every((stream) => stream.closed || stream.destroyed);
+}
 
-/* ------------------------------ finalization ----------------------------- */
-const hardTimer = setTimeout(() => {
-  record({ type: "hard-timeout", ms: LIMITS.hardTimeoutMs });
-  finish("hard-timeout", 3);
-}, LIMITS.hardTimeoutMs);
-
-function writeEvidence(doc, lines) {
+/* ------------------------------ evidence --------------------------------- */
+function measureTreeBytes(root) {
+  let total = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) continue;
+    if (stat.isDirectory()) {
+      let entries;
+      try {
+        entries = fs.readdirSync(current);
+      } catch {
+        continue;
+      }
+      for (const name of entries) stack.push(path.join(current, name));
+    } else if (stat.isFile()) {
+      total += stat.size;
+      if (total > LIMITS.maxScratchBytes) return total;
+    }
+  }
+  return total;
+}
+function writeEvidence(doc) {
   try {
-    fs.writeFileSync(path.join(evidence, "probe.jsonl"), lines.join("\n") + (lines.length ? "\n" : ""));
+    fs.writeFileSync(path.join(evidence, "probe.jsonl"), rowLines.join("\n") + (rowLines.length ? "\n" : ""));
     fs.writeFileSync(path.join(evidence, "probe.json"), JSON.stringify(doc, null, 2));
     return true;
   } catch {
@@ -197,12 +309,64 @@ function writeEvidence(doc, lines) {
   }
 }
 
+/* --------------------------- terminal waiting ---------------------------- */
+async function awaitTerminal(deadlineAt, streams, { rescueOnDeadline }) {
+  let rescued = false;
+  for (;;) {
+    if (pendingFailure) throw pendingFailure;
+    const live = liveOwned();
+    if (live.length === 0 && streamsClosed(streams)) {
+      return { terminal: true, rescued, live: 0, reason: "terminal" };
+    }
+    if (Date.now() >= deadlineAt) {
+      if (rescueOnDeadline && live.length > 0 && !rescued) {
+        rescued = true;
+        safeRecord({ type: "observer-rescue", phase: "terminal-deadline", live: live.length });
+        killOwnedGroups();
+        const subDeadline = Date.now() + 250;
+        while (Date.now() < subDeadline) {
+          if (liveOwnedSafe().length === 0 && streamsClosed(streams)) break;
+          await delay(LIMITS.pollIntervalMs);
+        }
+      }
+      const remaining = liveOwnedSafe().length;
+      return { terminal: remaining === 0 && streamsClosed(streams), rescued, live: remaining, reason: "deadline" };
+    }
+    await delay(LIMITS.pollIntervalMs);
+  }
+}
+
+/* ------------------------------ finalization ----------------------------- */
+const hardTimer = setTimeout(() => {
+  void finalize("hard-timeout", 3, { hardTimeout: true }, { killOwned: true });
+}, LIMITS.hardTimeoutMs);
+
 let finishing = false;
-function finish(outcome, exitCode, extra = {}) {
+async function finalize(outcome, exitCode, extra = {}, options = {}) {
   if (finishing) return;
   finishing = true;
   clearTimeout(hardTimer);
-  const terminal = typeof extra.terminal === "boolean" ? extra.terminal : exitCode === 0;
+  let rescueUsed = extra.rescueUsed === true;
+  if (options.killOwned) {
+    const live = liveOwnedSafe();
+    if (live.length > 0) {
+      rescueUsed = true;
+      safeRecord({ type: "observer-rescue", phase: "finalize", live: live.length });
+      killOwnedGroups();
+    }
+  }
+  let term = { terminal: false, rescued: rescueUsed, live: -1, reason: "unmeasured" };
+  try {
+    term = await awaitTerminal(
+      Math.min(hardDeadlineAt, Date.now() + LIMITS.reapDeadlineMs),
+      activeStreams,
+      { rescueOnDeadline: false },
+    );
+  } catch (error) {
+    pendingFailure = error;
+  }
+  if (!term.terminal && exitCode === 0) exitCode = 3;
+  const scratchBytesBefore = measureTreeBytes(path.join(scratch, "probe"));
   const doc = {
     schema: "paperclip.frozen-validator.probe-observer/v1",
     mode,
@@ -211,16 +375,24 @@ function finish(outcome, exitCode, extra = {}) {
     containment: "unproved",
     hardTimeoutMs: LIMITS.hardTimeoutMs,
     maxProcesses: LIMITS.maxProcesses,
-    outputBytes: rowBytes,
+    maxScratchBytes: LIMITS.maxScratchBytes,
+    outputBytes: rowBytes + channelBytes,
+    rowBytes,
+    channelBytes,
+    scratchBytes: scratchBytesBefore,
     owned: [...owned.values()],
     unknownOwnership,
+    rescueUsed: rescueUsed || term.rescued,
+    terminal: term.terminal,
+    liveOwned: term.live,
     ...extra,
   };
-  const evidenceOk = writeEvidence(doc, rowLines);
-  /* Preserve evidence and uncertainty before disposing owned work. Only a
-   * terminal, known-ownership run removes its own disposable scratch. */
+  const evidenceOk = writeEvidence(doc);
+  const scratchBytes = measureTreeBytes(path.join(scratch, "probe"));
+  const scratchOk = scratchBytes <= LIMITS.maxScratchBytes;
+  const terminalSuccess = term.terminal && !unknownOwnership && scratchOk && evidenceOk;
   let cleanupOk = true;
-  if (evidenceOk && terminal && !unknownOwnership) {
+  if (terminalSuccess && exitCode === 0) {
     try {
       const resolved = path.resolve(work);
       if (fs.realpathSync(resolved) !== resolved) cleanupOk = false;
@@ -230,60 +402,9 @@ function finish(outcome, exitCode, extra = {}) {
     }
   }
   if (!evidenceOk) process.exit(5);
+  if (!scratchOk && exitCode === 0) exitCode = 3;
   if (unknownOwnership || !cleanupOk) process.exit(exitCode === 0 ? 6 : exitCode);
   process.exit(exitCode);
-}
-
-function fail(code, extra = {}) {
-  record({ type: "fail-closed", code });
-  return finish(code, 3, extra);
-}
-
-/* --------------------------- terminal waiting ---------------------------- */
-/**
- * Await group/stdio terminal state. Returns { terminal, rescued, residual }.
- * `rescueMode` = "none" | "kill-owned-group" (only recorded owned state).
- */
-async function awaitTerminal({ rescueMode, deadlineMs, streams }) {
-  const deadline = Date.now() + deadlineMs;
-  let rescued = false;
-  const channelsClosed = () => streams.every((stream) => stream.closed || stream.destroyed);
-  for (;;) {
-    const live = survivors();
-    if (live.length === 0 && channelsClosed()) {
-      return { terminal: true, rescued, residual: false };
-    }
-    if (Date.now() >= deadline) {
-      if (rescueMode === "kill-owned-group" && live.length > 0 && !rescued) {
-        rescued = true;
-        record({ type: "observer-rescue", people: live.length });
-        /* Kill only recorded, starttime-verified owned process groups. */
-        const groups = new Set();
-        for (const entry of live) {
-          if (groups.has(entry.pgid)) continue;
-          groups.add(entry.pgid);
-          const stillLive = procStat(entry.pid);
-          if (stillLive && stillLive.starttime === entry.starttime) {
-            try {
-              process.kill(-entry.pgid, "SIGKILL");
-            } catch {
-              /* group already gone */
-            }
-          }
-        }
-        /* one more bounded wait for the rescue */
-        const rescueDeadline = Date.now() + LIMITS.reapDeadlineMs;
-        while (Date.now() < rescueDeadline) {
-          if (survivors().length === 0 && channelsClosed()) break;
-          await delay(LIMITS.pollIntervalMs);
-        }
-        const residual = survivors().length > 0;
-        return { terminal: !residual, rescued, residual };
-      }
-      return { terminal: false, rescued, residual: live.length > 0 };
-    }
-    await delay(LIMITS.pollIntervalMs);
-  }
 }
 
 /* ------------------------------ supervisor ------------------------------- */
@@ -295,114 +416,132 @@ async function runSupervisorProbe() {
     detached: true,
     shell: false,
   });
-  const supEntry = remember("supervisor", supervisor.pid);
-  if (!supEntry) return fail("UNKNOWN_OWNERSHIP", { stage: "supervisor" });
-
-  const streams = [supervisor.stdout, supervisor.stderr];
-  streams.forEach((stream) => stream.on("data", () => {})); // drained; bounded by supervisor
+  activeStreams = [supervisor.stdout, supervisor.stderr];
+  supervisor.stdout.on("data", accountChannel);
+  supervisor.stderr.on("data", accountChannel);
+  const supEntry = remember("supervisor", supervisor.pid, process.pid);
+  if (!supEntry) return finalize("UNKNOWN_OWNERSHIP", 3, { stage: "supervisor" }, { killOwned: true });
 
   let ready = null;
   supervisor.on("message", (message) => {
     if (!message || typeof message !== "object") return;
     if (message.type === "child-ready") {
+      const childEntry = remember("child", message.child, supervisor.pid);
+      const grandEntry = remember("grandchild", message.grandchild, message.child);
+      if (!childEntry || !grandEntry) return;
       if (!ready) {
         ready = message;
-        remember("child", message.child);
-        remember("grandchild", message.grandchild);
-        record({
+        safeRecord({
           type: "ready",
           supervisor: supervisor.pid,
-          child: message.child ?? null,
-          grandchild: message.grandchild ?? null,
+          child: message.child,
+          grandchild: message.grandchild,
           processCount: owned.size,
         });
       }
       return;
     }
+    if (message.type === "supervisor-error") {
+      safeRecord({ type: "supervisor-error", code: message.code ?? null });
+      return;
+    }
     if (message.type === "supervisor-exit") {
-      record({ ...message, type: "supervisor-report" });
+      safeRecord({ ...message, type: "supervisor-report" });
       return;
     }
     if (message.type === "child-error") {
-      record({ type: "child-error", message: message.message ?? null });
+      safeRecord({ type: "child-error", message: message.message ?? null });
     }
   });
 
-  const readyDeadline = Date.now() + LIMITS.maxReadyWaitMs;
-  while (!ready && Date.now() < readyDeadline && !unknownOwnership) {
+  const readyDeadline = Math.min(hardDeadlineAt, Date.now() + LIMITS.maxReadyWaitMs);
+  while (!ready && Date.now() < readyDeadline && !unknownOwnership && !pendingFailure) {
     await delay(LIMITS.pollIntervalMs);
   }
-  if (unknownOwnership) return fail("UNKNOWN_OWNERSHIP", { stage: "handshake" });
-  if (!ready) return fail("MISSING_READY", { stage: "handshake" });
-  if (owned.size > LIMITS.maxProcesses) return fail("PROCESS_CEILING", { processCount: owned.size });
+  if (pendingFailure) return finalize(pendingFailure.code, 3, pendingFailure.extra, { killOwned: true });
+  if (unknownOwnership) return finalize("UNKNOWN_OWNERSHIP", 3, { stage: "handshake" }, { killOwned: true });
+  if (!ready) return finalize("MISSING_READY", 3, { stage: "handshake" }, { killOwned: true });
+  if (owned.size > LIMITS.maxProcesses) {
+    return finalize("PROCESS_CEILING", 3, { processCount: owned.size }, { killOwned: true });
+  }
 
   if (mode === "normal-close") {
     try {
       supervisor.send({ type: "terminate", signal: "SIGTERM", graceMs: LIMITS.termKillGraceMs });
     } catch {
-      /* channel already gone; observer rescue path below */
+      /* channel gone; rescue path below */
     }
-    const result = await awaitTerminal({
-      rescueMode: "kill-owned-group",
-      deadlineMs: LIMITS.reapDeadlineMs,
-      streams,
-    });
-    const terminalProofOk = result.terminal && !result.rescued;
-    record({ type: "normal-close-result", ...result, terminalProofOk });
-    if (!result.terminal) return fail("RESIDUAL", { ...result });
-    return finish(result.rescued ? "normal-close-rescue" : "normal-teardown", 0, {
-      rescueUsed: result.rescued,
-      terminalProofOk,
-      terminal: true,
-    });
+    const term = await awaitTerminal(Date.now() + LIMITS.reapDeadlineMs, activeStreams, { rescueOnDeadline: true });
+    const terminalProofOk = term.terminal && !term.rescued;
+    safeRecord({ type: "normal-close-result", ...term, terminalProofOk });
+    return finalize(
+      term.rescued ? "normal-close-rescue" : term.terminal ? "normal-teardown" : "normal-close-residual",
+      term.terminal ? 0 : 3,
+      { terminalProofOk, terminal: term.terminal, rescueUsed: term.rescued },
+      { killOwned: !term.terminal },
+    );
   }
 
-  /* bootstrap-kill: kill ONLY the disposable supervisor, never helper/root. */
-  const killed = signalOwned(supEntry.pid, "SIGKILL", { onlyPid: true });
-  if (!killed) return fail("SUPERVISOR_SIGNAL", { stage: "bootstrap-kill" });
+  /* bootstrap-kill: SIGKILL ONLY the disposable supervisor, never helper/root. */
+  const killed = signalPidOnly(supEntry.pid, "SIGKILL");
+  if (!killed) return finalize("SUPERVISOR_SIGNAL", 3, { stage: "bootstrap-kill" }, { killOwned: true });
   const killAt = Date.now();
-  record({ type: "bootstrap-kill", supervisor: supEntry.pid, at: new Date(killAt).toISOString() });
+  safeRecord({ type: "bootstrap-kill", supervisor: supEntry.pid, at: new Date(killAt).toISOString() });
 
-  const elapsed = Date.now() - killAt;
   const observeAt = LIMITS.observeBeforeExpiryMs;
-  if (elapsed < observeAt) await delay(observeAt - elapsed);
-  const observedLive = survivors();
-  record({ type: "observation", at: new Date().toISOString(), survivors: observedLive });
+  if (Date.now() - killAt < observeAt) await delay(observeAt - (Date.now() - killAt));
+  const observedLive = liveOwnedSafe();
+  safeRecord({ type: "observation", at: new Date().toISOString(), survivors: observedLive });
 
-  /* Wait through the child's 3s self-expiry, then bound the terminal proof. */
-  const selfExpiryDeadline = killAt + LIMITS.selfExpiryMs + LIMITS.reapDeadlineMs;
-  let selfExpired = false;
-  while (Date.now() < selfExpiryDeadline) {
-    if (survivors().length === 0) {
-      selfExpired = true;
-      break;
-    }
-    await delay(LIMITS.pollIntervalMs);
-  }
-  const result = await awaitTerminal({
-    rescueMode: "kill-owned-group",
-    deadlineMs: Math.max(0, selfExpiryDeadline - Date.now()) + LIMITS.reapDeadlineMs,
-    streams,
-  });
-  const terminalWithoutRescue = result.terminal && !result.rescued;
-  record({ type: "bootstrap-kill-result", ...result, observedSurvivors: observedLive.length, selfExpired });
-  if (!result.terminal) return fail("RESIDUAL", { ...result, observedSurvivors: observedLive.length });
-  const outcome = result.rescued
+  /* One absolute terminal deadline: 3s self-expiry then one <=2s reap window. */
+  const deadlineAt = killAt + LIMITS.selfExpiryMs + LIMITS.reapDeadlineMs;
+  const term = await awaitTerminal(deadlineAt, activeStreams, { rescueOnDeadline: true });
+  const terminalWithoutRescue = term.terminal && !term.rescued;
+  safeRecord({ type: "bootstrap-kill-result", ...term, observedSurvivors: observedLive.length, terminalWithoutRescue });
+  const outcome = term.rescued
     ? "bootstrap-kill-rescue"
-    : selfExpired
-      ? "bootstrap-kill-self-expiry"
-      : "bootstrap-kill-terminal";
-  /* Parent-death containment is NEVER positive from this probe. */
-  return finish(outcome, 0, {
-    rescueUsed: result.rescued,
-    terminalWithoutRescue,
-    selfExpired,
-    observedSurvivors: observedLive.length,
-    terminal: true,
-  });
+    : !term.terminal
+      ? "bootstrap-kill-residual"
+      : observedLive.length > 0
+        ? "bootstrap-kill-self-expiry"
+        : "bootstrap-kill-terminal";
+  return finalize(
+    outcome,
+    term.terminal ? 0 : 3,
+    { observedSurvivors: observedLive.length, terminalWithoutRescue, terminal: term.terminal, rescueUsed: term.rescued },
+    { killOwned: !term.terminal },
+  );
 }
 
 /* ------------------------------ worker smoke ----------------------------- */
+const EXPECTED_LIFECYCLE = [
+  "main-send:start",
+  "worker-recv:started",
+  "main-send:run",
+  "worker-recv:testfileFinished",
+];
+const TAIL_LIFECYCLE = ["main-send:stop", "worker-recv:stopped"];
+function validateLifecycle(entries) {
+  let pointer = 0;
+  let tail = 0;
+  for (const entry of entries) {
+    const key = `${entry.dir}:${entry.messageType}`;
+    if (pointer < EXPECTED_LIFECYCLE.length) {
+      if (key !== EXPECTED_LIFECYCLE[pointer]) return { ok: false, reason: "unexpected-or-out-of-order", key, pointer };
+      pointer += 1;
+      continue;
+    }
+    if (key === TAIL_LIFECYCLE[tail]) {
+      tail += 1;
+      if (tail >= TAIL_LIFECYCLE.length) break;
+      continue;
+    }
+    return { ok: false, reason: "unexpected-lifecycle-tail", key, pointer };
+  }
+  if (pointer < EXPECTED_LIFECYCLE.length) return { ok: false, reason: "missing-lifecycle", pointer };
+  return { ok: true };
+}
+
 async function runWorkerSmoke() {
   const smoke = spawn(
     NODE,
@@ -425,47 +564,60 @@ async function runWorkerSmoke() {
       shell: false,
     },
   );
-  const entry = remember("vitest-main", smoke.pid);
-  if (!entry) return fail("UNKNOWN_OWNERSHIP", { stage: "worker-smoke" });
+  activeStreams = [smoke.stdout, smoke.stderr];
+  smoke.stdout.on("data", accountChannel);
+  smoke.stderr.on("data", accountChannel);
+  const entry = remember("vitest-main", smoke.pid, process.pid);
+  if (!entry) return finalize("UNKNOWN_OWNERSHIP", 3, { stage: "worker-smoke" }, { killOwned: true });
 
-  let bytes = 0;
-  let overflow = false;
-  for (const stream of [smoke.stdout, smoke.stderr]) {
-    stream.on("data", (chunk) => {
-      bytes += chunk.length;
-      if (bytes > LIMITS.maxOutputBytes) overflow = true;
-    });
-  }
   const lifecycle = [];
   smoke.on("message", (message) => {
     if (!message || typeof message !== "object") return;
-    lifecycle.push(message.type);
-    record({ type: "probe-lifecycle", message: message.type, detail: message });
+    if (message.type === "probe-lifecycle") {
+      lifecycle.push({ dir: message.dir, messageType: message.messageType });
+      safeRecord({ type: "probe-lifecycle", dir: message.dir, messageType: message.messageType });
+      return;
+    }
+    if (message.type === "probe-fork-admitted") {
+      remember("vitest-worker", message.pid, smoke.pid);
+      safeRecord({ type: "probe-fork-admitted", pid: message.pid ?? null });
+      return;
+    }
+    safeRecord({ type: "probe-message", messageType: message.type ?? null });
   });
 
   const exit = await new Promise((resolve) => {
     smoke.on("error", () => resolve({ code: 3 }));
     smoke.on("close", (code) => resolve({ code: typeof code === "number" ? code : 3 }));
   });
-  const result = await awaitTerminal({
-    rescueMode: "none",
-    deadlineMs: LIMITS.reapDeadlineMs,
-    streams: [smoke.stdout, smoke.stderr],
-  });
-  record({ type: "worker-smoke-result", exitCode: exit.code, overflow, lifecycle, ...result });
-  if (overflow) return fail("OUTPUT_CEILING", { stage: "worker-smoke" });
-  if (!result.terminal) return fail("RESIDUAL", { stage: "worker-smoke", ...result });
-  /* Refusals remain negative setup/compatibility evidence, not validator verdicts. */
-  if (exit.code !== 0) return finish("worker-smoke-refused", exit.code, { lifecycle, terminal: true });
-  return finish("worker-smoke-complete", 0, {
-    lifecycle,
-    terminalProofOk: result.terminal,
-    terminal: true,
-  });
+
+  const lifecycleCheck = validateLifecycle(lifecycle);
+  safeRecord({ type: "worker-smoke-result", exitCode: exit.code, lifecycle, lifecycleCheck });
+  if (!lifecycleCheck.ok) {
+    return finalize("WORKER_LIFECYCLE", 3, { lifecycle, lifecycleCheck, terminal: false }, { killOwned: true });
+  }
+  const term = await awaitTerminal(
+    Math.min(hardDeadlineAt, Date.now() + LIMITS.reapDeadlineMs),
+    activeStreams,
+    { rescueOnDeadline: true },
+  );
+  if (pendingFailure) return finalize(pendingFailure.code, 3, pendingFailure.extra, { killOwned: true });
+  if (!term.terminal) {
+    return finalize("RESIDUAL", 3, { lifecycle, terminal: false, rescueUsed: term.rescued }, { killOwned: true });
+  }
+  if (exit.code !== 0) {
+    return finalize("worker-smoke-refused", 3, { lifecycle, terminal: true, rescueUsed: term.rescued }, { killOwned: false });
+  }
+  return finalize(
+    "worker-smoke-complete",
+    0,
+    { lifecycle, terminalProofOk: term.terminal && !term.rescued, terminal: true, rescueUsed: term.rescued },
+    { killOwned: false },
+  );
 }
 
 /* -------------------------------- dispatch ------------------------------- */
-record({
+safeRecord({
   type: "observer-start",
   mode,
   hostRoot: HOST_ROOT,
@@ -475,8 +627,10 @@ record({
   selfExpiryMs: LIMITS.selfExpiryMs,
 });
 
-if (mode === "worker-smoke") {
-  await runWorkerSmoke();
-} else {
-  await runSupervisorProbe();
+try {
+  if (mode === "worker-smoke") await runWorkerSmoke();
+  else await runSupervisorProbe();
+} catch (error) {
+  if (error instanceof ProbeFail) await finalize(error.code, 3, error.extra, { killOwned: true });
+  else await finalize("probe-error", 3, { message: String(error?.message ?? error) }, { killOwned: true });
 }
