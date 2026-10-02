@@ -1,0 +1,73 @@
+{
+  "schema": "paperclip.frozen-validator.manifest/v1",
+  "hostWorkspaceId": "81f2e6d8-cbd7-4ee9-9fb3-d18f6c6587ec",
+  "hostCwd": "/home/nigel/projects/homelab/.paperclip-source-pins/2026.916.1/validator-fixture-authoring",
+  "toolchain": {
+    "node": "24.21.0",
+    "pnpm": "9.15.4",
+    "vitest": "4.1.11",
+    "vite": "8.2.2"
+  },
+  "roles": {
+    "candidate": {
+      "workspaceId": "ce40ac7f-561a-46f2-9062-9cf298522cc3",
+      "cwd": "/home/nigel/projects/homelab/.paperclip-source-pins/2026.916.1/validator-frozen-verify",
+      "revision": "29bf67512aabd7b461a30e546c195e28c37f219e",
+      "files": {
+        "server/src/services/heartbeat.ts": { "blob": "47586831b3b90d8d16f2b053eba3177dfcd253a6", "sha256": "cbdfeedbcb28e660d4103ddfe585812585325e79202fc24902828699558b2750" },
+        "server/src/home-paths.ts": { "blob": "4ec29915a461fbacce88d9964ad5606f35ad41e5", "sha256": "1b36cc65179959c0c4467e80360d5ed8c7fec177abcd1eeaa9c0f523d611585b" },
+        "server/package.json": { "blob": "a2ecf6d49ff24466f1780a611d719cd8a439dd45", "sha256": "6a6ced85f186ad2be68baa924ecc426bdad13b9b6de1b9cf8ba041c67ea11886" },
+        "package.json": { "blob": "69fa2dce143750c9c2c9452d0f77b33c6038968c", "sha256": "36f774d59291df67ef5ec9d7562f7d6cdec2063d9375d9e8030cd1bf6e790ffb" },
+        "pnpm-lock.yaml": { "blob": "c34d669b3be4a4a6711083cc4e6242feed2e3a20", "sha256": "d7d96cf0d98cf0946f6195e29ba173b03711a947a1c38f312b67cda56c254c22" },
+        "vitest.config.ts": { "blob": "cceb1767e2ba0bee7209a54fbc2ba81bb44755ef", "sha256": "0f8018d2e6963d1013f0148746afed5f87371b89d41bbc9875a80d593746595d" },
+        "server/vitest.config.ts": { "blob": "239bce1bc3b00a303f50bc0b07a072ef48624f64", "sha256": "dd0f8403f963dbbb0879e56c5820e5458acd94fcc3510ad99006b40258fe9990" },
+        "packages/paperclip-runner/src/index.ts": { "blob": "7aeec692b85621af8c4f0b0c72322aa54c709e90", "sha256": "0b825aef1efd2466789aa1e42e113413944e5c34bb8fa929f9357beb15f68819" }
+      }
+    },
+    "base": {
+      "workspaceId": "068e96a3-13b3-45ef-b06f-be01f4c33487",
+      "cwd": "/home/nigel/projects/homelab/.paperclip-source-pins/2026.916.1/validator-frozen-base",
+      "revision": "871532c335bb8c0f501a200201f4e4ac1fc63fb0",
+      "files": {
+        "server/src/services/heartbeat.ts": { "blob": "76293aca7cc39f2f06e80d17704bd7bdd1ddc794", "sha256": "c668a1e69c75e652185b18283294a6e920b33867c7702224b154975f9d89600a" },
+        "server/src/home-paths.ts": { "blob": "4ec29915a461fbacce88d9964ad5606f35ad41e5", "sha256": "1b36cc65179959c0c4467e80360d5ed8c7fec177abcd1eeaa9c0f523d611585b" },
+        "server/package.json": { "blob": "a2ecf6d49ff24466f1780a611d719cd8a439dd45", "sha256": "6a6ced85f186ad2be68baa924ecc426bdad13b9b6de1b9cf8ba041c67ea11886" },
+        "package.json": { "blob": "69fa2dce143750c9c2c9452d0f77b33c6038968c", "sha256": "36f774d59291df67ef5ec9d7562f7d6cdec2063d9375d9e8030cd1bf6e790ffb" },
+        "pnpm-lock.yaml": { "blob": "c34d669b3be4a4a6711083cc4e6242feed2e3a20", "sha256": "d7d96cf0d98cf0946f6195e29ba173b03711a947a1c38f312b67cda56c254c22" },
+        "vitest.config.ts": { "blob": "cceb1767e2ba0bee7209a54fbc2ba81bb44755ef", "sha256": "0f8018d2e6963d1013f0148746afed5f87371b89d41bbc9875a80d593746595d" },
+        "server/vitest.config.ts": { "blob": "239bce1bc3b00a303f50bc0b07a072ef48624f64", "sha256": "dd0f8403f963dbbb0879e56c5820e5458acd94fcc3510ad99006b40258fe9990" },
+        "packages/paperclip-runner/src/index.ts": { "blob": "7aeec692b85621af8c4f0b0c72322aa54c709e90", "sha256": "0b825aef1efd2466789aa1e42e113413944e5c34bb8fa929f9357beb15f68819" }
+      }
+    }
+  },
+  "hostFiles": {
+    "server/src/__tests__/frozen-validator-loader.mjs": { "blob": "c880165dae72dea4a131ee7db9f896db33aaa7ac", "sha256": "2d964fe76f3b3d4e2b8dcdb01ae72d650e2037d2422b925efdddfaee39593d45" },
+    "server/src/__tests__/frozen-validator-bootstrap.mjs": { "blob": "2624a1516f46b63a484d64cdf6f7887340481f2b", "sha256": "5c1d6e8ca6687272f10e981a7d6c10d6e76f2aaea90396f5428bf34d536f9de2" },
+    "server/src/__tests__/frozen-validator-preload.mjs": { "blob": "422f2ed719d224f13236e453b6eb1816d8d78ba9", "sha256": "2c77a8fac2726c834712048263d9636f9f2889e8d182579bbd0f6d750423649f" },
+    "server/src/__tests__/frozen-validator.vitest.config.mjs": { "blob": "4135df57bdd73227c2c78fc0928c1682238ee0de", "sha256": "4254d9dd9b007d966406fb43d8f66540d63c7ec646085c484293930e4fbdbeda" },
+    "server/src/__tests__/frozen-validator-independent.test.ts": { "blob": "57dca01a29301de981feaa42ffc2c6cb2437f0a7", "sha256": "b6f695779ca4ee1fbba9a7ab340152618ff52d9f2b780df05f2a6d984c872d8b" }
+  },
+  "subjectExports": {
+    "assertGitSensitiveAdapterWorkspaceValid": "server/src/services/heartbeat.ts",
+    "resolveDefaultAgentWorkspaceDir": "server/src/home-paths.ts"
+  },
+  "gitPolicy": {
+    "allowedSetupSubcommands": ["init", "config", "add", "commit", "worktree", "branch", "checkout", "switch", "reset", "remote"],
+    "allowedReadSubcommands": ["rev-parse", "merge-base", "hash-object", "symbolic-ref", "status", "config"],
+    "forbiddenFlags": ["-C", "--git-dir", "--work-tree", "--namespace", "--config-env", "-c"],
+    "authorName": "Frozen Fixture",
+    "authorEmail": "fixture@example.com"
+  },
+  "ceilings": {
+    "gitCallsPerRole": 600,
+    "gitCallTimeoutMs": 15000,
+    "gitCallMaxOutputBytes": 1048576,
+    "roleStdioMaxBytes": 8388608,
+    "caseLogMaxBytes": 4194304,
+    "caseLogRowMaxBytes": 65536,
+    "testTimeoutMs": 15000,
+    "hookTimeoutMs": 30000,
+    "teardownTimeoutMs": 30000,
+    "helperMaxDurationMs": 600000
+  }
+}

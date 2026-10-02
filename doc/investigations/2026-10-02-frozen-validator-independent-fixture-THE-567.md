@@ -1,186 +1,145 @@
-# Frozen independent validator fixture — manifest and permission inputs (THE-567)
+# Frozen independent validator fixture — corrected static publication (THE-567)
 
-Static authoring/publication only. This document and the companion fixture
-`server/src/__tests__/frozen-validator-independent.test.ts` are a **proposal**;
-they prove no executed fixture correctness and no candidate acceptance. Independent
-runtime QA is [THE-560](/THE/issues/THE-560) (held); independent certification of
-these static bytes is [THE-564](/THE/issues/THE-564).
+Static authoring/publication only. This document and the host modules described
+below are a **proposal**. They prove no executed fixture correctness and no
+candidate acceptance. Independent certification of these static bytes is
+[THE-564](/THE/issues/THE-564); runtime QA is [THE-560](/THE/issues/THE-560).
 
-Source contract: [THE-564 static-contract-partial](/THE/issues/THE-564#document-static-contract-partial)
-revision `399f0503-95be-4f26-a2d9-e62644f155c4`, copied into
-[THE-567 fixture-design](/THE/issues/THE-567#document-fixture-design).
+This revision supersedes the prior publication at
+`ce5d101809f7d9546eebe0ae2a6a04b532b807b1` (fixture blob
+`e30a10977d60c50340b1935dcb313f8421151da1`, evidence blob
+`f27a4401f483784a8a093b16e18dd24bd0e250cc`). It implements the corrections in
+fixture-review revision `7f08a0ca-1101-4e43-ab0d-0a24154d3e6b` against the
+Reliability interface [isolated-import-design](/THE/issues/THE-565#document-isolated-import-design)
+revision `0f054523-3cef-4caa-b840-4d1e36ead7a7`.
 
-## Subject
+## Three independent identities
 
-`assertGitSensitiveAdapterWorkspaceValid` in `server/src/services/heartbeat.ts`
-of the bound frozen checkout. Roles are run separately:
+Prefix `P=/home/nigel/projects/homelab/.paperclip-source-pins/2026.916.1`.
 
-- `base` — immutable pre-descendant-discovery revision.
-- `candidate` — immutable descendant-discovery revision.
+| Role | `projectWorkspaceId` | cwd | Required HEAD |
+| --- | --- | --- | --- |
+| host H | `81f2e6d8-cbd7-4ee9-9fb3-d18f6c6587ec` | `P/validator-fixture-authoring` | corrected publication F (unknown until commit) |
+| candidate C | `ce40ac7f-561a-46f2-9062-9cf298522cc3` | `P/validator-frozen-verify` | `29bf67512aabd7b461a30e546c195e28c37f219e` |
+| base B | `068e96a3-13b3-45ef-b06f-be01f4c33487` | `P/validator-frozen-base` | `871532c335bb8c0f501a200201f4e4ac1fc63fb0` |
 
-The fixture refuses to run unless the bound checkout's top-level, HEAD, heartbeat
-Git blob and SHA256 all match the pinned role, and unless a forbidden root (the
-authoring checkout) is supplied and does not contain the bound root. It is inert
-(`describe.skip`) when no role/root is supplied, so it never silently exercises the
-authoring checkout.
+C and B are frozen and immutable. The fixture must not test H as if it were C.
+No overlay/copy into C/B, no NODE_PATH bridge, no installed-source borrowing.
 
-## Immutable Git object bindings (independently read)
+## Host files added/corrected (all in H)
 
-Git blob IDs are content-addressed; SHA256 is over the blob bytes.
-
-| Path | Base blob / SHA256 | Candidate blob / SHA256 |
+| File | Git blob | SHA256 |
 | --- | --- | --- |
-| `server/src/services/heartbeat.ts` | `76293aca7cc39f2f06e80d17704bd7bdd1ddc794` / `c668a1e69c75e652185b18283294a6e920b33867c7702224b154975f9d89600a` | `47586831b3b90d8d16f2b053eba3177dfcd253a6` / `cbdfeedbcb28e660d4103ddfe585812585325e79202fc24902828699558b2750` |
-| `server/src/__tests__/heartbeat-workspace-session.test.ts` | `04faeb834f93a70d2e55beda6a637d6e8cf9b24d` / `6c2f30941dbce9bbe0c78cb0ad340c7476c6ed12a6510d2ca8982543097e3237` | `583f1a455b6f8f7fa15e84603e7f09074320cd9c` / `318365ddde4d0279d34ea0ad0b7e72119eedd2029007521205f2a1c9276ee17e` |
-| `server/src/__tests__/heartbeat-project-repositories.test.ts` | (unchanged) `f87ac2b11c4fde0636e2d5a1a4ceb9041b736ebf` / `38ffc64331eb3839b0e55812f0180f386ab2f39548b0fc5dfcbffa7541f30ce1` | `f87ac2b11c4fde0636e2d5a1a4ceb9041b736ebf` / `38ffc64331eb3839b0e55812f0180f386ab2f39548b0fc5dfcbffa7541f30ce1` |
-| `package.json` | `69fa2dce143750c9c2c9452d0f77b33c6038968c` / `36f774d59291df67ef5ec9d7562f7d6cdec2063d9375d9e8030cd1bf6e790ffb` | same |
-| `server/vitest.config.ts` | `239bce1bc3b00a303f50bc0b07a072ef48624f64` / `dd0f8403f963dbbb0879e56c5820e5458acd94fcc3510ad99006b40258fe9990` | same |
-| `vitest.config.ts` | `cceb1767e2ba0bee7209a54fbc2ba81bb44755ef` / `0f8018d2e6963d1013f0148746afed5f87371b89d41bbc9875a80d593746595d` | same |
-| `pnpm-lock.yaml` | `c34d669b3be4a4a6711083cc4e6242feed2e3a20` / `d7d96cf0d98cf0946f6195e29ba173b03711a947a1c38f312b67cda56c254c22` | same |
-| `pnpm-workspace.yaml` | `3518e9086ffa5f33c6560f921915ce231a8c3183` / `3da641269a022cfa084e1e0dd65a4e3f82eac5359611d08569459cc89def7ebb` | same |
+| `server/src/__tests__/frozen-validator-loader.mjs` | `c880165dae72dea4a131ee7db9f896db33aaa7ac` | `2d964fe76f3b3d4e2b8dcdb01ae72d650e2037d2422b925efdddfaee39593d45` |
+| `server/src/__tests__/frozen-validator-bootstrap.mjs` | `2624a1516f46b63a484d64cdf6f7887340481f2b` | `5c1d6e8ca6687272f10e981a7d6c10d6e76f2aaea90396f5428bf34d536f9de2` |
+| `server/src/__tests__/frozen-validator-preload.mjs` | `422f2ed719d224f13236e453b6eb1816d8d78ba9` | `2c77a8fac2726c834712048263d9636f9f2889e8d182579bbd0f6d750423649f` |
+| `server/src/__tests__/frozen-validator.vitest.config.mjs` | `4135df57bdd73227c2c78fc0928c1682238ee0de` | `4254d9dd9b007d966406fb43d8f66540d63c7ec646085c484293930e4fbdbeda` |
+| `server/src/__tests__/frozen-validator-independent.test.ts` | `57dca01a29301de981feaa42ffc2c6cb2437f0a7` | `b6f695779ca4ee1fbba9a7ab340152618ff52d9f2b780df05f2a6d984c872d8b` |
+| `server/src/__tests__/frozen-validator.manifest.json` | `0819a11ad73605b289aba483b99844146d4adf9a` | `c94a2bd04571d151c59ffaf36cdbd090b339a6f8fead03420d353ee6efba363d` |
 
-Revisions: base `871532c335bb8c0f501a200201f4e4ac1fc63fb0`,
-candidate `29bf67512aabd7b461a30e546c195e28c37f219e`.
+The manifest does not hash itself recursively and does not claim its own commit.
+Verification pins it externally as M and pins the host commit as F.
 
-Fixture file binding (authored revision):
-`server/src/__tests__/frozen-validator-independent.test.ts` blob
-`e30a10977d60c50340b1935dcb313f8421151da1`, SHA256
-`a7a20b612e13471952a9eb1927472dbf16ab3dae128c934c3682c3bd5cbc5890`.
+## Role/closure bindings in the manifest
 
-## Case matrix (input / expected / predicted)
+Candidate and base each list `workspaceId`, `cwd`, `revision`, and per-file
+`blob`+`sha256` for `server/src/services/heartbeat.ts`, `server/src/home-paths.ts`,
+`server/package.json`, `package.json`, `pnpm-lock.yaml`, `vitest.config.ts`,
+`server/vitest.config.ts`, and `packages/paperclip-runner/src/index.ts`. Heartbeat:
+C `47586831…`/`cbdfeedb…`, B `76293aca…`/`c668a1e6…`. Home-paths is shared:
+`4ec29915…`/`1b36cc65…`. Pinned toolchain: Node 24.21.0, pnpm 9.15.4, Vitest
+4.1.11, Vite 8.2.2.
 
-`cand` = candidate, `base` = base. `refuse:<reason>` is the
-`workspaceValidation.reason`. Predicted-red rows are the security contract, not a
-waiver: a red candidate assertion is an acceptance finding.
+## Guard order (before any mkdir/mkdtemp or product/Vitest/Vite import)
 
-| # | Case id | Input shape | base | candidate | predicted candidate |
-| --- | --- | --- | --- | --- | --- |
-| 1 | `descendant.linked-worktree.success` | linked-worktree `server/` descendant, pin=HEAD | `refuse:missing_git_metadata` | accept | accept |
-| 2 | `descendant.ordinary-repo.success` | ordinary repo `server/` descendant, pin=HEAD | `refuse:missing_git_metadata` | accept | accept |
-| 3 | `root.linked-worktree.success` | linked-worktree root, direct `.git` FILE | accept | accept | accept |
-| 4 | `root.ordinary.success` | ordinary repo root, direct `.git` DIR | accept | accept | accept |
-| 5 | `nonrepo.descendant.refuse` | real non-repo dir | `refuse:missing_git_metadata` | `refuse:missing_git_metadata` | refuse |
-| 6 | `effective.persisted-cwd-mismatch.refuse` | effective ≠ persisted cwd | `refuse:persisted_cwd_mismatch` | same | refuse |
-| 7 | `missing.persisted-workspace.refuse` | null persisted workspace | `refuse:missing_persisted_execution_workspace` | same | refuse |
-| 8 | `missing.effective-cwd.refuse` | null effective cwd | `refuse:missing_effective_cwd` | same | refuse |
-| 9 | `missing.persisted-workspace-id.refuse` | persisted project workspace id null | `refuse:persisted_workspace_missing_project_workspace_id` | same | refuse |
-| 10 | `project-workspace.mismatch.refuse` | persisted bound to other workspace | `refuse:project_workspace_mismatch` | same | refuse |
-| 11 | `fallback.agent-home.refuse` | effective = agent fallback | `refuse:fallback_agent_home_cwd` | same | refuse |
-| 12 | `provider-ref.descendant.refuse` | git_worktree providerRef=root, cwd=descendant | `refuse:git_worktree_provider_ref_mismatch` | same | refuse |
-| 13 | `branch.descendant.refuse` | descendant, providerRef=persisted=cwd, recorded branch ≠ actual | `refuse:missing_git_metadata` | `refuse:git_worktree_branch_mismatch` | refuse |
-| 14 | `authority.root-mismatch.refuse` | repos A/B; effective=persisted=B/server, resolved/base=A | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_repository` | **accept (gap)** |
-| 15 | `origin.mismatch.refuse` | descendant origin ≠ declared remote | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_repository` | refuse |
-| 16 | `origin.missing.refuse` | descendant declares remote, repo has no origin | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_repository` | **accept (gap)** |
-| 17 | `origin.match.normalization.success` | origin `git@github.com:Example/Repo.git` = declared HTTPS | `refuse:missing_git_metadata` | accept | accept |
-| 18 | `nested.repo.refuse` | effective/persisted=outer/nested/server, resolved/base=outer | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_repository` | **accept (gap)** |
-| 19 | `nested.direct-root.refuse` | effective/persisted=outer/nested root (direct `.git`), resolved/base=outer | `refuse:git_metadata_wrong_repository` | same | **accept (gap, both roles)** |
-| 20 | `symlink.escaping.refuse` | `outer/link -> other/server`, resolved/base=outer | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_repository` | **accept (gap)** |
-| 21 | `symlink.in-root.success` | `outer/link -> outer/server`, exact cwd contract | `refuse:missing_git_metadata` | accept | accept |
-| 22 | `pin.divergent-nonancestor.refuse` | HEAD/declared pin on divergent branches | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_pin` | refuse |
-| 23 | `pin.unresolved-nonref.refuse` | declared pin does not resolve locally | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_pin` | **accept (gap)** |
-| 24 | `pin.exact-ancestor.refuse` | HEAD ahead of declared pin (pin is ancestor) | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_pin` | **accept (gap)** |
-| 25 | `pin.head-equals.success` | HEAD = declared pin | `refuse:missing_git_metadata` | accept | accept |
-| 26 | `pin.behind.refuse` | HEAD behind declared pin | `refuse:missing_git_metadata` | `refuse:git_metadata_wrong_pin` | refuse |
-| 27 | `direct.ordinary-root.wrong-pin.refuse` | ordinary root, wrong pin | `refuse:git_metadata_wrong_pin` | same | **accept (gap, both roles)** |
-| 28 | `direct.linked-root.wrong-origin.refuse` | linked root, declared remote ≠ origin | `refuse:git_metadata_wrong_repository` | same | **accept (gap, both roles)** |
-| 29 | `direct.fake-empty-git-dir.refuse` | non-repo dir with empty `.git/` DIR | `refuse:missing_git_metadata` | same | **accept (gap, both roles)** |
-| 30 | `direct.malformed-gitdir-file.refuse` | non-repo dir with malformed `.git` FILE | `refuse:missing_git_metadata` | same | **accept (gap, both roles)** |
+1. Role is exactly `candidate` or `base`. Fixed env `PC_FROZEN_VALIDATOR_ROLE`,
+   `PC_FROZEN_VALIDATOR_HOST_SHA`, `PC_FROZEN_VALIDATOR_MANIFEST_SHA256` must
+   equal certified inputs. No arbitrary ROOT/CASE_LOG/scratch/env-ceiling override.
+2. H top-level equals the containing host, H HEAD equals F, manifest SHA256 equals
+   M, and every pinned host file matches its Git blob and SHA256 (checked via the
+   bounded counted Git read path).
+3. Nonempty absolute injected `PAPERCLIP_RUN_SCRATCH_DIR` and `TMPDIR`: canonical
+   existing real directories, owned by the executing UID, not symlink aliases, not
+   inside an enclosing Git repository, and disjoint from H/C/B in both directions.
+4. Owned role dirs `scratch/frozen-validator/<role>/{repos,cache,output,home}`;
+   case log fixed at `output/cases.jsonl`. Unknown role or empty scratch refuses.
+5. Refuse foreign `NODE_PATH`/`NODE_OPTIONS`, observability endpoints and DSNs.
+6. Only then create owned role directories, and only then load the subject.
 
-Grouped residuals from the source contract: candidate self-match on the persisted
-cwd root (14/18/20), missing/unresolved origin and pin skips (16/23), ancestor
-pin waiver (24), and the direct-`.git` fast path skipping root/origin/pin checks
-(19/27/28/29/30). These are recorded as explicit red assertions.
+The worker preload repeats guards 1–5 in the fork before any product load.
+The subject is loaded via the host loader's fresh Vite SSR instance
+(`configFile=false`, `envFile=false`, `appType=custom`, `middlewareMode=true`,
+`hmr=false`, `ws=false`, `watch=null`, owned `cacheDir`), with the exact
+`/^@paperclipai\/paperclip-runner$/` alias, an own-built `/live` alias,
+`ssr.noExternal=/^@paperclipai\//`, and a closure-audit plugin that refuses
+host/ancestor module targets. `ssrLoadModule` is called only for the absolute
+selected-subject `server/src/services/heartbeat.ts` and `server/src/home-paths.ts`
+with `{fixStacktrace:false}`; the server closes in `finally`. The host's own
+heartbeat is never imported.
 
-## Proposed runner argv (complete, separate candidate/base)
+## Corrections applied
 
-Runtime closure is Reliability-owned. The fixture binds by relative import to
-`../services/heartbeat.ts`, so it must run from a checkout at the pinned revision
-that contains this exact fixture file (for example a temporary full checkout or
-read-only worktree of the pinned revision; the frozen ROOT `ce40ac7f` itself stays
-immutable). `TMPDIR` must resolve under the run-owned scratch so `os.tmpdir()`
-and every generated repo/linked worktree stay inside it.
+1. No top-level product import; loader-bound subject after guards. `describe.skip`
+   fallback removed.
+2. Distinct H/C/B identity; no host=subject HEAD, overlay or borrowing; separate
+   fully expanded candidate/base templates below.
+3. Canonical injected scratch validation before any mutation or load; empty refuses.
+4. Fixed contained output; exact Git argv templates and forbidden scope flags;
+   setup cwd must stay under the owned repos root.
+5. Kept the descendant refusal case; added a genuine linked-root branch drift case
+   (`providerRef=persisted=effective=root`) asserting the wrapper reason plus the
+   underlying `branch_mismatch` reasonCode, recorded in the case log.
+6. Root A/B, nested and escaping-symlink rows omit the pin and use neutral remotes;
+   they record observed top-level/HEAD. Pin security tests stay separate.
+7. Fixed aggregate Git ceiling 600 including guard/setup/subject reads, 15000 ms
+   and 1 MiB per call, role stdio 8 MiB, case log 4 MiB, row 64 KiB, supervised
+   child tree with IPC Git accounting and hermetic Git env. No env overrides.
 
-The following are placeholders whose required bindings are the revision, heartbeat
-blob and SHA256 above; the exact scratch path is a run-owned input, not certified
-here.
+## Case matrix retained
 
-Candidate:
+30 prior cases plus the added linked-root branch-drift case (31 total): genuine
+ordinary/linked roots and descendants; paired B root-positive / B descendant
+`missing_git_metadata` / C descendant success; non-repo; persisted/effective/
+provider/workspace-binding and branch refusals; authoritative A/B; matching/
+missing/mismatched origin; nested/direct nested; inside/escaping symlinks;
+divergent/unresolved/ancestor/exact/behind pins; ordinary+linked direct-`.git`
+bypass and fake empty/malformed `.git`. Eleven C predicted-red assertions and the
+inherited B direct-`.git` reds remain explicit security findings, not waivers.
 
-```
-PC_FROZEN_VALIDATOR_ROLE=candidate \
-PC_FROZEN_VALIDATOR_ROOT="$CANDIDATE_CHECKOUT" \
-PC_FROZEN_VALIDATOR_REVISION=29bf67512aabd7b461a30e546c195e28c37f219e \
-PC_FROZEN_VALIDATOR_FORBIDDEN_ROOT="$AUTHORING_CHECKOUT" \
-PC_FROZEN_VALIDATOR_SCRATCH="$PAPERCLIP_RUN_SCRATCH_DIR" \
-PC_FROZEN_VALIDATOR_CASE_LOG="$PAPERCLIP_RUN_SCRATCH_DIR/frozen-validator-independent-candidate-cases.jsonl" \
-TMPDIR="$PAPERCLIP_RUN_SCRATCH_DIR" \
-/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 \
-  --max-duration 600 --product-sha 29bf67512aabd7b461a30e546c195e28c37f219e \
-  --cases the-560-validator-frozen-independent-candidate -- \
-  pnpm exec vitest run server/src/__tests__/frozen-validator-independent.test.ts
+## Token templates (not execution permission)
+
+Both run from H. F = corrected host commit; M = manifest SHA256; N = certified
+Node absolute path. All are pending Verification/publication inputs and must not
+be guessed.
+
+```text
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 29bf67512aabd7b461a30e546c195e28c37f219e --cases the-560-validator-independent-candidate -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role candidate --host-sha <F> --manifest-sha256 <M> --node <N>
+
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 871532c335bb8c0f501a200201f4e4ac1fc63fb0 --cases the-560-validator-independent-base -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role base --host-sha <F> --manifest-sha256 <M> --node <N>
 ```
 
-Base (same shape): `PC_FROZEN_VALIDATOR_ROLE=base`,
-`PC_FROZEN_VALIDATOR_ROOT="$BASE_CHECKOUT"`,
-`PC_FROZEN_VALIDATOR_REVISION=871532c335bb8c0f501a200201f4e4ac1fc63fb0`,
-`--product-sha 871532c335bb8c0f501a200201f4e4ac1fc63fb0`,
-`--cases the-560-validator-frozen-independent-base`, and a base case-log path.
+Child argv: `<N> --import <H>/server/src/__tests__/frozen-validator-preload.mjs
+<H>/node_modules/vitest/vitest.mjs run --config
+<H>/server/src/__tests__/frozen-validator.vitest.config.mjs --pool=forks
+--maxWorkers=1 --no-file-parallelism
+<H>/server/src/__tests__/frozen-validator-independent.test.ts`.
+Pinned Vitest 4.1.11 exposes no `minWorkers`.
 
-Each invocation emits one JSON-lines record per case:
-`{role,id,group,description,input,expected,actual,predictedCandidateVerdict,predictedBaseVerdict,verdict,gap,error?}`.
+## Unresolved inputs and honest limits
 
-## Local Git subprocess allowance and ceilings
-
-The fixture's own setup Git is confined to the run-owned scratch and an allowlist:
-`init, config, add, commit, worktree, branch, checkout, switch, reset, rev-parse,
-merge-base, remote, hash-object, symbolic-ref, status`. Network/mutation commands
-(`fetch,push,clone,remote add/remove` against real remotes) are not permitted.
-Ceilings (env-overridable): `PC_FROZEN_VALIDATOR_GIT_MAX_CALLS` default 600,
-`PC_FROZEN_VALIDATOR_GIT_TIMEOUT_MS` default 15000, `PC_FROZEN_VALIDATOR_GIT_MAX_BUFFER`
-default 1048576, and a 60000 ms per-test timeout. The subject's own internal Git
-reads are part of the candidate/base under test and are bounded by that timeout,
-not by the fixture wrapper.
-
-## Run-owned disk scratch / output / cleanup
-
-- Scratch root: `PC_FROZEN_VALIDATOR_SCRATCH` (fallback `PAPERCLIP_RUN_SCRATCH_DIR`),
-  must contain `os.tmpdir()`.
-- Fixture root: `<scratch>/frozen-validator-independent-<role>-<random>`.
-- All generated repos, linked worktrees and symlink targets live under the fixture
-  root.
-- Case log is written (sanitized: paths relativized to the scratch root) to
-  `PC_FROZEN_VALIDATOR_CASE_LOG` or `<scratch>/frozen-validator-independent-<role>-cases.jsonl`
-  before cleanup.
-- `afterAll` recursively removes only the fixture root; the case log is preserved.
-
-## Permission inputs (future execution; not granted here)
-
-- Runtime QA issue [THE-560](/THE/issues/THE-560) `f527dbee-1917-4e61-b9c8-500a8597521b`,
-  agent `089a4259-cb74-4ea9-8f3f-c33555f7c841`, exact registered workspace/canonical cwd.
-- Helper v5 SHA256 `ff3b13be8506d82f24834eaae9e347a2f2884a56398fcf29864a0ff488e87f54`;
-  max 4G; `--estimate 600 --reserve 180 --run-budget 1800 --max-duration 600`;
-  minimum 780 s before and after shared `heavy.lock`/`fd9` acquisition; no overrides
-  or raw fallback.
-- No wildcard shell payloads, extra test paths, interpolated refs, alternate
-  executables, install, or network.
-
-## Design limits
-
-- Static bytes only. Not executed here; no candidate acceptance is asserted.
-- The candidate/base module load, dependency closure, helper budget and exact argv
-  tokens remain Reliability-owned and are not certified by this document.
-- The run-owned scratch root must not itself be inside a Git repository, otherwise
-  the `nonrepo.descendant.refuse` fixture would discover an enclosing repository
-  and no longer represent a real non-repository directory.
-- Case 13 (`branch.descendant.refuse`) passes the descendant cwd as the worktree
-  path, so the branch guard's `inspectManagedGitWorktreeBranch` cannot confirm a
-  worktree root and reports `git_worktree_branch_mismatch`; the refusal reason is
-  correct but the underlying reasonCode is `wrong_repository_root`, not
-  `branch_mismatch`. Recorded honestly.
-- Matching-origin case 17 is local-only (no network); normalization is the
-  scheme/userinfo/`.git`/case normalization in the subject.
+- Not executed. No fixture, Vitest, Vite, helper, install, build or product load.
+- F, M and N are not yet published/certified; the templates are not literal.
+- H has no proved installed dependency closure (Vite/Vitest/db/shared/adapter-utils/
+  runner/native). Full third-party, native and conditional-export resolution and
+  the host bootstrap/preload/loader graphs remain UNPROVED. Reliability owns the
+  bounded host/base dependency preparation after corrected pins.
+- Case 13 (`branch.descendant-root.refuse`) reports the wrapper
+  `git_worktree_branch_mismatch` with an underlying `wrong_repository_root`, recorded
+  honestly; the new drift case proves the true `branch_mismatch` path.
+- The run-owned scratch must not itself be inside a Git repository.
 
 ## Rollback
 
-Revert the task branch commit / delete the two added files. No product source,
-policy, infrastructure or candidate byte is modified.
+Revert the task branch commit or delete the added host files. No product source,
+policy, infrastructure, frozen candidate/base byte or installed dependency is
+modified. C/B remain immutable.
