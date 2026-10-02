@@ -53,16 +53,34 @@ It supersedes `ee8f5711746976d13ff6e5d600acae02bc607440` / M
   `not_registered`; case 14 records `branch_mismatch`. No `60000` literals; recursive
   path redaction; `observe()` guard denials recorded; case-log completeness checked.
 
+## V4 corrections (this revision)
+
+Implements the six V4 findings against published `c6b62743`:
+- V4-1: the linked-worktree operand is an exact absolute `SLOT.ABS_TARGET` at argv index 4; `planGitLaunch`
+  validates the launched operand's canonical parent under `work/repos`, its nonexistence and symbol
+  containment (no `args[5]`, no `REL`, no shell split).
+- V4-2: the bootstrap refuses before any child (`PARENT_DEATH_UNPROVED`, exit 7) while
+  `containment.parentDeathProof` is unproved.
+- V4-3: the reaper is a promise awaited after `close`; `terminalOk` guards success; durable evidence is
+  written before any `work` cleanup, and a failed evidence write exits 5 without deleting the work tree.
+- V4-4: the tracked-tree `status` read is counted; reports carry `type`+`token`; the bootstrap keeps a
+  per-instance monotonic map and aggregate, bound to the exact report token.
+- V4-5: fork admits only the realpath+hash `dist/workers/forks.js` with a token-allowlisted worker
+  execArgv that must include the pinned preload; spawn/spawnSync are Git-only; `tinypool` is refused.
+- V4-6: closure prefixes are the exact Vitest/Vite package dirs (no `dirname` widening); the 17+5
+  registered worker files are hash-verified; the module audit is bounded and fails on overflow instead
+  of truncating to success.
+
 ## Host files (current bytes)
 
 | File | Git blob | SHA256 |
 | --- | --- | --- |
-| `frozen-validator-loader.mjs` | `6a8bf56b5a6ac7e170b40f9505b794f8237fc4b7` | `d6ffad1d4957ec145b6846228f7bc769c1e33ff8a32c88ac008dc60cbfa011f9` |
-| `frozen-validator-bootstrap.mjs` | `297c2fdf5015bab6fe4841f882a2ff7053ec4501` | `bbeee82fa8c72f248d7e3a54e8a60038b8f0f46d9cbaa9f2be320791744a792f` |
-| `frozen-validator-preload.mjs` | `5b8efd3f0a5006199112bec871e84e9a7a9ce28b` | `95205382b5240426a73d3f0c59eb094b6fabae5ed7ed23ad3fb792296077f668` |
-| `frozen-validator.vitest.config.mjs` | `6e1eca745a15598ef96726fd106bd9dfa09c9135` | `289c194a40b2b8dfce9b31e32c1f7afd477de543119a6809ed9f84f96905dcbe` |
+| `frozen-validator-loader.mjs` | `40f0941e16b90a237c0cdf1e4da5d5f587ac85d5` | `c04757cac48813915108d439cfeb8fbff1207c9e8a373ae20cab77d9636d064f` |
+| `frozen-validator-bootstrap.mjs` | `5c170c0896fc92f5fd45d348813adeb9a40b4658` | `99b3f056465a0db07d0ef3e469a802ba62a55246173c82e1bfca6848719359fe` |
+| `frozen-validator-preload.mjs` | `28421afaf040879640631143329c884ba878eff7` | `545101d310eaf3e8d07f6373d2990df7bedb85ec7c49fc1f29298ae57cf84489` |
+| `frozen-validator.vitest.config.mjs` | `a4f422c8842b691dc15084b8cfa53e1a0d925279` | `a6016305163db24a74c8e7d1af2e979f46525b8a352f6143c682953fa6bcd26e` |
 | `frozen-validator-independent.test.ts` | `d1613c555d09e57115bf2363d123b14f5886da29` | `b89c4034ee8be5350df4287fb4e9362071cb6f04092be1102e25a51ef9417a02` |
-| `frozen-validator.manifest.json` | (M source) | `2670f9aac1823f3c69245e0f10de3977530e220633b4cb9aa5c1daee07520a4e` |
+| `frozen-validator.manifest.json` | (M source) | `06a36969122a7b3f7881de99d2c99eeee00031ced80d1e2bc61035308ea87062` |
 
 ## Toolchain closure (installed, not committed)
 

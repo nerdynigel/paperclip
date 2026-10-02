@@ -27,6 +27,10 @@ export default {
     environment: "node",
     isolate: true,
     pool: "forks",
+    // V4-5: pin the mandatory preload on the worker. Vitest composes the full
+    // worker execArgv from its own options plus this array; the preload admits
+    // only the registered tokens. Exact full composition is Verification-bound.
+    execArgv: ["--import", PRELOAD],
     poolOptions: {
       forks: {
         execArgv: ["--import", PRELOAD],

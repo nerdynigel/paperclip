@@ -149,6 +149,8 @@ const SLOT = Object.freeze({
   REMOTE_NAME: /^[A-Za-z0-9._-]+$/,
   REMOTE_URL: /^(https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\.git)?|git@github\.com:[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\.git)?)$/,
   MSG: /^(seed|nested|ahead|divergent|second)$/,
+  // Absolute target operand: validated against the owned repos root in planGitLaunch.
+  ABS_TARGET: /^\/.*$/,
 });
 function isRelNoTraversal(token) {
   return SLOT.REL.test(token) && !token.split("/").includes("..");
@@ -176,7 +178,7 @@ const SETUP_TEMPLATES = [
   ["add", "README.md"],
   ["commit", "-m", SLOT.MSG],
   ["remote", "add", "origin", SLOT.REMOTE_URL],
-  ["worktree", "add", "-b", SLOT.BRANCH, SLOT.REL, "HEAD"],
+  ["worktree", "add", "-b", SLOT.BRANCH, SLOT.ABS_TARGET, "HEAD"],
   ["checkout", "-b", SLOT.BRANCH],
   ["reset", "--hard", SLOT.SHA40],
 ];
@@ -191,6 +193,8 @@ function matchTemplate(template, args) {
       if (actual !== expected) return false;
     } else if (expected === SLOT.REL) {
       if (!isRelNoTraversal(actual)) return false;
+    } else if (expected === SLOT.ABS_TARGET) {
+      if (!path.isAbsolute(actual)) return false;
     } else if (!expected.test(actual)) {
       return false;
     }
@@ -229,9 +233,16 @@ export function planGitLaunch({ args, cwd, reposRoot }) {
     refuse("GIT_CWD_ESCAPE", `git cwd is outside the owned repos root: ${canonicalCwd}`);
   }
   if (args[0] === "worktree" && args[1] === "add") {
-    const target = args[5];
-    if (!isSameOrInside(reposRoot, path.resolve(target))) {
-      refuse("GIT_TARGET_ESCAPE", `worktree target is outside the owned repos root: ${target}`);
+    // V4-1: the launched operand is index 4; resolve/validate that exact token.
+    const target = args[4];
+    if (typeof target !== "string" || !path.isAbsolute(target)) {
+      refuse("GIT_TARGET", "worktree target must be an absolute path");
+    }
+    const parent = path.dirname(target);
+    assertRealDirectory(parent, "GIT_TARGET_PARENT");
+    const realParent = fs.realpathSync(parent);
+    if (!isSameOrInside(reposRoot, realParent)) {
+      refuse("GIT_TARGET_ESCAPE", `worktree target parent is outside the owned repos root: ${realParent}`);
     }
     if (fs.existsSync(target)) refuse("GIT_TARGET_EXISTS", `worktree target already exists: ${target}`);
   }
@@ -271,7 +282,7 @@ function loaderGitRead(args, cwd, allowedRoots, ledger) {
   const allowed =
     (first === "rev-parse" && (second === "--show-toplevel" || second === "HEAD")) ||
     first === "hash-object" ||
-    (first === "status" && second === "--porcelain");
+    (first === "status" && second === "--porcelain" && (args[2] === undefined || args[2] === "--untracked-files=no"));
   if (!allowed) refuse("LOADER_READ", `loader reader refused argv: ${JSON.stringify(args)}`);
   if (!allowedRoots.some((root) => path.resolve(root) === path.resolve(cwd))) {
     refuse("LOADER_READ_ROOT", `loader reader cwd is not an allowed root: ${cwd}`);
@@ -405,11 +416,13 @@ function validateSourcePins(manifest, role, roleConfig, scratch, tmp, budgetLedg
   if (!SLOT.SHA40.test(roleConfig.revision) || head !== roleConfig.revision) {
     refuse("ROLE_HEAD", `role HEAD ${head} is not the pinned revision ${roleConfig.revision}`);
   }
-  const status = RAW_EXEC_FILE_SYNC(
-    "git",
+  // V4-4: the tracked-tree status read is counted like every other guard read.
+  const status = loaderGitRead(
     ["status", "--porcelain", "--untracked-files=no"],
-    { cwd: roleCwd, env: hermeticGitEnv(), encoding: "utf8", timeout: FIXED_CEILINGS.gitCallTimeoutMs, maxBuffer: FIXED_CEILINGS.gitCallMaxOutputBytes },
-  ).trim();
+    roleCwd,
+    [roleCwd],
+    budgetLedger,
+  );
   if (status !== "") refuse("ROLE_DIRTY", "role tracked tree is not clean");
 
   for (const [rel, expected] of Object.entries(roleConfig.files ?? {})) {
@@ -434,6 +447,11 @@ function validateNodeIdentity(manifest, fixedNode) {
   }
   if (process.versions.node !== manifest.toolchain.node) {
     refuse("NODE_VERSION", `Node ${process.versions.node} is not the pinned ${manifest.toolchain.node}`);
+  }
+  const pinnedNodeSha = manifest.toolchain?.nodeSha256;
+  if (!pinnedNodeSha) refuse("NODE_PROVENANCE", "manifest has no Node executable SHA256 pin");
+  if (sha256FileSync(process.execPath) !== pinnedNodeSha) {
+    refuse("NODE_PROVENANCE", "Node executable SHA256 does not match the pinned provenance");
   }
 }
 
@@ -586,6 +604,8 @@ export function buildValidatedRoleContext(options = {}) {
   if (!roleConfig || typeof roleConfig.cwd !== "string") refuse("ROLE_CONFIG", `no role config for ${role}`);
   const { scratch, tmp } = validateScratch(manifest);
   const source = validateSourcePins(manifest, role, roleConfig, scratch, tmp, ledger);
+  // V4-5/V4-6: exact canonical toolchain + registered worker-file closure, before writes.
+  const toolchain = resolveToolchain(manifest);
   const dirs = buildRolePaths(scratch, role);
 
   const bootstrapPid = Number.parseInt(process.env.PC_FROZEN_VALIDATOR_BOOTSTRAP_PID ?? "", 10);
@@ -607,6 +627,7 @@ export function buildValidatedRoleContext(options = {}) {
     bootstrapPid,
     ceilings: FIXED_CEILINGS,
     ledger,
+    toolchain,
     git: { env: hermeticGitEnv(dirs.work) },
   };
 
@@ -615,14 +636,14 @@ export function buildValidatedRoleContext(options = {}) {
   } else {
     attachRoleLifecycle(dirs, ctx);
   }
-  options.reporter?.({ gitCalls: ledger.spent, remaining: ledger.remaining });
+  options.reporter?.({ gitCalls: ledger.spent, remaining: ledger.remaining, phase });
 
   MEMO = ctx;
   return ctx;
 }
 
-export function getValidatedRoleContext() {
-  if (!MEMO) buildValidatedRoleContext({});
+export function getValidatedRoleContext(options = {}) {
+  if (!MEMO) buildValidatedRoleContext(options);
   return MEMO;
 }
 
@@ -697,26 +718,57 @@ function resolveViteEntry(manifest, vitest) {
   return { entryPath, entrySha256: entrySha, realpath: path.dirname(real), version: pkg.version };
 }
 
-function createClosureAuditPlugin(roleConfig, audits) {
-  const closureRoot = path.resolve(roleConfig.cwd);
-  const toolchainPrefixes = manifestsToolchainPrefixes();
+/**
+ * V4-5/V4-6: resolve exact canonical Vitest/Vite package dirs and verify every
+ * registered worker-closure file by equality and SHA256. Fail closed; never widen
+ * to peer node_modules or an ancestor.
+ */
+export function resolveToolchain(manifest) {
+  const vitest = resolveVitestPackage(manifest);
+  const vite = resolveViteEntry(manifest, vitest);
+  const workerFiles = manifest.closure?.workerFiles ?? {};
+  for (const [prefix, files] of Object.entries(workerFiles)) {
+    const base = prefix === "V" ? vitest.packageDir : prefix === "E" ? vite.realpath : null;
+    if (!base) refuse("CLOSURE_WORKERFILES", `unknown worker-file prefix: ${prefix}`);
+    for (const [rel, expected] of Object.entries(files)) {
+      if (!isRelNoTraversal(rel)) refuse("CLOSURE_WORKERFILES", `unsafe worker-file key: ${rel}`);
+      const target = path.join(base, rel);
+      if (!fs.existsSync(target) || sha256FileSync(target) !== expected) {
+        refuse("CLOSURE_WORKERFILES", `worker-closure file drifted: ${prefix}/${rel}`);
+      }
+    }
+  }
+  return { vitest, vite };
+}
+
+const CLOSURE_AUDIT_MAX_ENTRIES = 5000;
+const CLOSURE_AUDIT_MAX_BYTES = 1048576;
+
+function createClosureAuditPlugin(options) {
+  const { closureRoot, toolchainPrefixes } = options;
   const contains = (absolute) =>
     isSameOrInside(closureRoot, absolute) ||
     toolchainPrefixes.some((prefix) => isSameOrInside(prefix, absolute));
+  const state = { entries: [], bytes: 0, overflow: false };
   const check = (id) => {
     if (typeof id !== "string") return;
     if (id.includes("\0")) refuse("CLOSURE_VIRTUAL", `virtual module refused: ${id}`);
     if (id.startsWith("node:")) return;
-    const absolute = path.isAbsolute(id) ? id : null;
-    if (!absolute) return;
-    let real = absolute;
+    if (!path.isAbsolute(id)) return;
+    let real = id;
     try {
-      real = fs.realpathSync(absolute);
+      real = fs.realpathSync(id);
     } catch {
       /* not yet on disk */
     }
     if (!contains(real)) refuse("CLOSURE_ESCAPE", `module target outside the role closure: ${real}`);
-    audits.push({ id, realpath: real });
+    const row = JSON.stringify({ id, realpath: real });
+    state.bytes += row.length + 1;
+    if (state.entries.length >= CLOSURE_AUDIT_MAX_ENTRIES || state.bytes > CLOSURE_AUDIT_MAX_BYTES) {
+      state.overflow = true;
+      refuse("CLOSURE_AUDIT_OVERFLOW", "closure module audit exceeded its bounded capacity");
+    }
+    state.entries.push(row);
   };
   return {
     name: "frozen-validator-closure-audit",
@@ -730,14 +782,8 @@ function createClosureAuditPlugin(roleConfig, audits) {
       check(id);
       return null;
     },
-    buildEnd() {
-      // bounded audit is written by loadBoundSubject.
-    },
+    _state: state,
   };
-}
-let TOOLCHAIN_PREFIXES = [];
-function manifestsToolchainPrefixes() {
-  return TOOLCHAIN_PREFIXES;
 }
 
 /**
@@ -745,15 +791,14 @@ function manifestsToolchainPrefixes() {
  * Vitest-closure Vite 8.2.2. Never loads the host heartbeat.
  */
 export async function loadBoundSubject(ctx) {
-  const { roleConfig, dirs, manifest } = ctx;
-  const vitest = resolveVitestPackage(manifest);
-  const vite = resolveViteEntry(manifest, vitest);
-  TOOLCHAIN_PREFIXES = [vitest.packageDir, path.dirname(vite.realpath)];
+  const { roleConfig, dirs } = ctx;
+  const toolchain = ctx.toolchain ?? resolveToolchain(ctx.manifest);
+  const vitest = toolchain.vitest;
+  const vite = toolchain.vite;
 
   const viteModule = await import(pathToFileURL(vite.entryPath).href);
   if (typeof viteModule.createServer !== "function") refuse("VITE_API", "Vite module does not export createServer");
 
-  const audits = [];
   const runnerAlias = {
     find: /^@paperclipai\/paperclip-runner$/,
     replacement: path.join(roleConfig.cwd, "packages/paperclip-runner/src/index.ts"),
@@ -772,8 +817,16 @@ export async function loadBoundSubject(ctx) {
     server: { middlewareMode: true, hmr: false, ws: false, watch: null },
     resolve: { alias: [runnerAlias, runnerLiveAlias] },
     ssr: { noExternal: true },
-    plugins: [createClosureAuditPlugin(roleConfig, audits)],
+    plugins: [
+      createClosureAuditPlugin({
+        closureRoot: roleConfig.cwd,
+        toolchainPrefixes: [vitest.packageDir, vite.realpath],
+      }),
+    ],
   });
+  const auditPlugin = server.config.plugins.find(
+    (plugin) => plugin?.name === "frozen-validator-closure-audit",
+  );
   try {
     const heartbeat = await server.ssrLoadModule(path.join(roleConfig.cwd, "server/src/services/heartbeat.ts"), {
       fixStacktrace: false,
@@ -786,9 +839,12 @@ export async function loadBoundSubject(ctx) {
     if (typeof validate !== "function" || typeof resolveHome !== "function") {
       refuse("SUBJECT_EXPORTS", "bound subject is missing a required callable export");
     }
+    const auditState = auditPlugin?._state ?? { entries: [], bytes: 0, overflow: false };
+    if (auditState.overflow || auditState.bytes > CLOSURE_AUDIT_MAX_BYTES) {
+      refuse("CLOSURE_AUDIT_OVERFLOW", "closure module audit is incomplete; refusing truncated success");
+    }
     const auditPath = path.join(dirs.output, "module-audit.jsonl");
-    const bounded = audits.slice(0, 20000).map((a) => JSON.stringify(a)).join("\n") + "\n";
-    fs.writeFileSync(auditPath, bounded);
+    fs.writeFileSync(auditPath, auditState.entries.join("\n") + "\n");
     return {
       assertGitSensitiveAdapterWorkspaceValid: validate,
       resolveDefaultAgentWorkspaceDir: resolveHome,

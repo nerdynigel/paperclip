@@ -1,12 +1,14 @@
 /**
- * Frozen validator bootstrap (THE-567, corrective contract v4).
+ * Frozen validator bootstrap (THE-567, corrective contract v4 / V4 pass).
  *
- * Plain built-in ESM plus the host loader guard. Runs in the `create` phase:
- * validates, creates the role lifecycle exclusively, writes the role receipt,
- * then supervises exactly one detached Vitest child with a transfer-ledger
- * endowment, sanitized environment, bounded stdio and separate exit/close reaping.
+ * Create phase: validate, create the role lifecycle exclusively, write the role
+ * receipt, then (only if containment is proved) supervise one detached Vitest
+ * child with a transfer-ledger endowment, bounded stdio, awaited terminal group
+ * proof, durable evidence before disposable cleanup and an authenticated
+ * monotonic per-instance aggregate.
  *
- * STATIC / UNEXECUTED. Detached parent-death containment is UNPROVED.
+ * STATIC / UNEXECUTED. Detached parent-death containment is UNPROVED; the
+ * bootstrap refuses before spawning the child in that state.
  */
 
 import { spawn } from "node:child_process";
@@ -45,6 +47,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 const nonce = randomUUID();
+const reportToken = randomUUID();
 
 process.env.PC_FROZEN_VALIDATOR_PHASE = "create";
 process.env.PC_FROZEN_VALIDATOR_ROLE = args.role;
@@ -67,6 +70,16 @@ const context = buildValidatedRoleContext({
   },
 });
 
+/* V4-2: refuse before any child when detached parent-death containment is unproved. */
+const parentDeathProof = context.manifest.containment?.parentDeathProof ?? null;
+if (!parentDeathProof || typeof parentDeathProof !== "string") {
+  failClosed(
+    "PARENT_DEATH_UNPROVED",
+    "detached parent-death containment is unproved; refusing to launch the child",
+    7,
+  );
+}
+
 const testFile = path.join(context.hostRoot, "server/src/__tests__/frozen-validator-independent.test.ts");
 const preloadFile = path.join(context.hostRoot, "server/src/__tests__/frozen-validator-preload.mjs");
 const configFile = path.join(context.hostRoot, "server/src/__tests__/frozen-validator.vitest.config.mjs");
@@ -76,7 +89,7 @@ for (const required of [testFile, preloadFile, configFile, vitestEntry]) {
 }
 
 const childInstanceId = randomUUID();
-const allocation = transferLedger(context.ledger); // Rule B: remaining - 1, keep 1
+const allocation = transferLedger(context.ledger);
 const observedBase = context.ledger.spent;
 
 const childEnv = {
@@ -97,6 +110,7 @@ const childEnv = {
   PC_FROZEN_VALIDATOR_RECEIPT_NONCE: nonce,
   PC_FROZEN_VALIDATOR_BOOTSTRAP_PID: String(process.pid),
   PC_FROZEN_VALIDATOR_INSTANCE_ID: childInstanceId,
+  PC_FROZEN_VALIDATOR_REPORT_TOKEN: reportToken,
   PC_FROZEN_VALIDATOR_GIT_ALLOCATION: String(allocation),
   PC_FROZEN_VALIDATOR_GIT_OBSERVED_BASE: String(observedBase),
 };
@@ -120,6 +134,7 @@ const child = spawn(args.node, childArgs, {
   env: childEnv,
   stdio: ["ignore", "pipe", "pipe", "ipc"],
   detached: true,
+  shell: false,
 });
 
 const supervisor = {
@@ -149,8 +164,15 @@ let stdioBytes = 0;
 let overLimit = false;
 let stdoutChunks = [];
 let stderrChunks = [];
-const seenReportKeys = new Set();
 let stdioCloseTimer = null;
+let reapPromise = Promise.resolve();
+const perInstance = new Map();
+
+function aggregateObserved() {
+  let total = context.ledger.spent;
+  for (const entry of perInstance.values()) total += entry.spent;
+  return total;
+}
 
 function terminate(reason) {
   if (supervisor.terminationReason) return;
@@ -179,24 +201,34 @@ function accountStdio(chunk, sink) {
 child.stdout.on("data", (chunk) => accountStdio(chunk, stdoutChunks));
 child.stderr.on("data", (chunk) => accountStdio(chunk, stderrChunks));
 
+/* V4-4: authenticated (token), monotonic (per-instance seq) aggregate. */
 child.on("message", (message) => {
-  if (!message || typeof message !== "object" || message.type === "frozen-validator-git") return;
-  if (message.v !== 4 || typeof message.instanceId !== "string" || !Number.isInteger(message.seq)) return;
-  const key = `${message.instanceId}:${message.seq}`;
-  if (seenReportKeys.has(key)) return;
-  seenReportKeys.add(key);
+  if (!message || typeof message !== "object" || message.type !== "frozen-validator-git") return;
+  if (message.v !== 4 || message.token !== reportToken) return;
+  if (typeof message.instanceId !== "string" || !Number.isInteger(message.seq)) return;
+  const previous = perInstance.get(message.instanceId);
+  if (previous && message.seq <= previous.seq) return;
+  perInstance.set(message.instanceId, {
+    seq: message.seq,
+    spent: Number.isInteger(message.spent) ? message.spent : previous?.spent ?? 0,
+    remaining: Number.isInteger(message.remaining) ? message.remaining : previous?.remaining ?? 0,
+    parentInstanceId: message.parentInstanceId ?? null,
+  });
   supervisor.seenReports += 1;
-  if (Number.isInteger(message.spent) && message.spent > supervisor.gitObservedSpent) {
-    supervisor.gitObservedSpent = message.spent;
-  }
-  if (supervisor.gitObservedSpent > context.ceilings.gitCallsPerRole) terminate("git-ceiling");
+  const observed = aggregateObserved();
+  if (observed > supervisor.gitObservedSpent) supervisor.gitObservedSpent = observed;
+  if (observed > context.ceilings.gitCallsPerRole) terminate("git-ceiling");
 });
 
-function reapGroup() {
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function reapGroup() {
   supervisor.reapStartedAt = new Date().toISOString();
   const pgid = child.pid;
   const deadline = Date.now() + context.ceilings.reapTimeoutMs;
-  const poll = () => {
+  for (;;) {
     supervisor.reapAttempts += 1;
     let live = false;
     try {
@@ -224,16 +256,15 @@ function reapGroup() {
       supervisor.groupLiveAfterReap = supervisor.residualAfterKill;
       return;
     }
-    setTimeout(poll, context.ceilings.reapPollIntervalMs);
-  };
-  poll();
+    await delay(context.ceilings.reapPollIntervalMs);
+  }
 }
 
 child.on("exit", (code, signal) => {
   supervisor.childExitedAt = new Date().toISOString();
   supervisor.exitCode = typeof code === "number" ? code : null;
   supervisor.signal = signal ?? null;
-  reapGroup();
+  reapPromise = reapGroup();
   stdioCloseTimer = setTimeout(() => {
     supervisor.stdioCloseTimedOut = true;
     for (const stream of [child.stdout, child.stderr]) {
@@ -276,18 +307,23 @@ const exitCode = await new Promise((resolve) => {
 });
 clearTimeout(deadline);
 
-/* Contract E.3: durable evidence before disposable cleanup. */
-function writeEvidence(name, data) {
-  fs.writeFileSync(path.join(context.dirs.output, name), data);
-}
+/* V4-3: await terminal group proof before deciding success. */
+await reapPromise;
+if (stdioCloseTimer) clearTimeout(stdioCloseTimer);
+const terminalOk =
+  !supervisor.groupLiveAfterReap && !supervisor.residualAfterKill && !supervisor.stdioCloseTimedOut;
+
+/* V4-3: durable evidence first; a failed write must preserve the work tree. */
 let evidenceFailure = false;
 try {
-  writeEvidence("child-stdout.log", Buffer.concat(stdoutChunks));
-  writeEvidence("child-stderr.log", Buffer.concat(stderrChunks));
-  writeEvidence("supervisor.json", JSON.stringify(supervisor, null, 2));
+  fs.writeFileSync(path.join(context.dirs.output, "child-stdout.log"), Buffer.concat(stdoutChunks));
+  fs.writeFileSync(path.join(context.dirs.output, "child-stderr.log"), Buffer.concat(stderrChunks));
+  fs.writeFileSync(path.join(context.dirs.output, "supervisor.json"), JSON.stringify(supervisor, null, 2));
 } catch {
   evidenceFailure = true;
 }
+
+if (evidenceFailure) process.exit(5);
 
 let cleanupFailure = false;
 try {
@@ -297,7 +333,7 @@ try {
 } catch {
   cleanupFailure = true;
 }
-
-if (evidenceFailure) process.exit(5);
 if (cleanupFailure) process.exit(6);
+
+if (!terminalOk) process.exit(7);
 process.exit(overLimit ? 4 : exitCode);
