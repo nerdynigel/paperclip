@@ -9558,6 +9558,9 @@ export function heartbeatService(
   const recovery = recoveryService(db, {
     enqueueWakeup,
     liveRunExecutions,
+    onProcessGoneRunTerminalized: async (run) => {
+      await reconcileOrphanedRunEnvironmentLeases([run.id]);
+    },
     scheduleRecoveryRetry: async (runId) => {
       const [run] = await db
         .select()
@@ -18498,6 +18501,11 @@ export function heartbeatService(
   // data already on the lease row.
   async function sweepOrphanedActiveLeases(opts: {
     backoffMs: number;
+    // Restrict the sweep to these heartbeat runs. The periodic reaper sweeps
+    // every eligible lease. The terminalization recovery path passes the exact
+    // process-gone runs it just terminalized, so it never races a live
+    // finalizer releasing a different run's lease.
+    runIds?: readonly string[];
   }): Promise<{ recovered: number }> {
     const cutoff = new Date(Date.now() - opts.backoffMs);
 
@@ -18511,6 +18519,9 @@ export function heartbeatService(
       .where(
         and(
           eq(environmentLeases.status, "active"),
+          opts.runIds && opts.runIds.length > 0
+            ? inArray(environmentLeases.heartbeatRunId, [...opts.runIds])
+            : undefined,
           or(
             isNull(environmentLeases.heartbeatRunId),
             inArray(heartbeatRuns.status, [
@@ -18587,6 +18598,10 @@ export function heartbeatService(
   // cleanup claim; after controller loss, exact-resource destruction may repeat.
   async function sweepPendingCleanupLeases(opts?: {
     backoffMs?: number;
+    // Restrict the sweep to these heartbeat runs. The terminalization recovery
+    // path passes the exact process-gone runs it just recovered, so the
+    // same-tick teardown stays scoped to the leases it flipped.
+    runIds?: readonly string[];
     /** One cleanup attempt per explicit user Retry, for this failed run only.
      * A later user Retry may bypass the cooldown after a provider failure,
      * but cannot take over an in-flight cleanup attempt.
@@ -18630,6 +18645,9 @@ export function heartbeatService(
       .where(
         and(
           eq(environmentLeases.status, "pending_cleanup"),
+          opts?.runIds && opts.runIds.length > 0
+            ? inArray(environmentLeases.heartbeatRunId, [...opts.runIds])
+            : undefined,
           opts?.explicitRetry ? eq(environmentLeases.companyId, opts.explicitRetry.companyId) : undefined,
           opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
           pendingCleanupRetryDueSql(Boolean(opts?.explicitRetry)),
@@ -18819,6 +18837,60 @@ export function heartbeatService(
     }
 
     return { swept: rows.length, destroyed, capped };
+  }
+
+  // Reconcile the environment leases of runs the recovery backstop just
+  // terminalized under process-death authority. The terminal run write and the
+  // lease release are separate statements, and the startup stale-lock sweep
+  // terminalizes runs after the startup orphan reaper has already run, so a
+  // hard-killed legacy run could keep an active lease until a later reaper tick
+  // -- or forever when scheduling suppression skips the periodic reaper. This
+  // runs the same lifecycle the reaper uses, scoped to the recovered runs:
+  // flip their active leases, then tear the flipped leases down on the same
+  // call. It inherits the existing provider cleanup, retry and live-owner
+  // guards, so an external resource owned by another live lease is preserved.
+  async function reconcileOrphanedRunEnvironmentLeases(
+    runIds: readonly string[],
+  ): Promise<void> {
+    if (runIds.length === 0) return;
+    try {
+      const recovered = await sweepOrphanedActiveLeases({
+        backoffMs: 0,
+        runIds,
+      });
+      if (recovered.recovered > 0) {
+        logger.warn(
+          { recovered: recovered.recovered, runIds },
+          "recovered orphaned active leases from terminalized process-gone runs",
+        );
+      }
+    } catch {
+      // Log a constant errorKind only. The exception can carry a credential in
+      // its name, code, message, cause, or stack.
+      logger.error(
+        { errorKind: ORPHANED_ACTIVE_LEASE_SWEEP_ERROR_KIND },
+        "orphaned active environment lease sweep failed",
+      );
+    }
+    try {
+      const swept = await sweepPendingCleanupLeases({ backoffMs: 0, runIds });
+      if (swept.destroyed > 0 || swept.capped > 0) {
+        logger.warn(
+          {
+            destroyed: swept.destroyed,
+            capped: swept.capped,
+            swept: swept.swept,
+            runIds,
+          },
+          "swept pending_cleanup leases recovered from terminalized process-gone runs",
+        );
+      }
+    } catch {
+      logger.error(
+        { errorKind: PENDING_CLEANUP_SWEEP_ERROR_KIND },
+        "pending_cleanup lease sweep failed",
+      );
+    }
   }
 
   async function markNativeOwnershipUnverified(
