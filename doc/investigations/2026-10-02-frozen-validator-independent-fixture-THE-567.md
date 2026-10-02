@@ -71,16 +71,29 @@ Implements the six V4 findings against published `c6b62743`:
   registered worker files are hash-verified; the module audit is bounded and fails on overflow instead
   of truncating to success.
 
+## Residual corrections (this revision)
+
+Implements the three independent residuals at `cf5a4ebc`:
+- R1 terminal-before-cleanup: the awaited group-reap and stdio-close proof is evaluated before any
+  disposable cleanup; a nonterminal proof (`exit 7`) or failed evidence write (`exit 5`) preserves the
+  work tree and evidence; `supervisor.terminalProofOk` records the proof.
+- R2 exact worker graph: `assertWorkerExecArgv` requires exact ordered equality with the certified
+  token array (no permutation/repetition/subset); `assertWorkerOptions` pins cwd=H, inherited cwd=H,
+  shell=false, detached=false, execPath=N, serialization=advanced, stdio=pipe; `assertWorkerEnv`
+  allowlists the caller env; the endowed env is rebuilt from a sanitized base.
+- R3 Git shell refusal: `assertNoShell` refuses `shell:true` on the execFile, execFileSync, spawn and
+  spawnSync paths before any child starts.
+
 ## Host files (current bytes)
 
 | File | Git blob | SHA256 |
 | --- | --- | --- |
 | `frozen-validator-loader.mjs` | `40f0941e16b90a237c0cdf1e4da5d5f587ac85d5` | `c04757cac48813915108d439cfeb8fbff1207c9e8a373ae20cab77d9636d064f` |
-| `frozen-validator-bootstrap.mjs` | `5c170c0896fc92f5fd45d348813adeb9a40b4658` | `99b3f056465a0db07d0ef3e469a802ba62a55246173c82e1bfca6848719359fe` |
-| `frozen-validator-preload.mjs` | `28421afaf040879640631143329c884ba878eff7` | `545101d310eaf3e8d07f6373d2990df7bedb85ec7c49fc1f29298ae57cf84489` |
+| `frozen-validator-bootstrap.mjs` | `816be7a13ab230c0b35de8694091ad6a4cd7210f` | `605173e368f42a97b45aa6ef67b021804d89f1f3402527c820528759b9659272` |
+| `frozen-validator-preload.mjs` | `ef1605c4b3ebe585cad113dc854920502773f60c` | `17879e8f6e42a39649d23f03f48a2fd45db85269996ecc27a66165395fe7c591` |
 | `frozen-validator.vitest.config.mjs` | `a4f422c8842b691dc15084b8cfa53e1a0d925279` | `a6016305163db24a74c8e7d1af2e979f46525b8a352f6143c682953fa6bcd26e` |
 | `frozen-validator-independent.test.ts` | `d1613c555d09e57115bf2363d123b14f5886da29` | `b89c4034ee8be5350df4287fb4e9362071cb6f04092be1102e25a51ef9417a02` |
-| `frozen-validator.manifest.json` | (M source) | `06a36969122a7b3f7881de99d2c99eeee00031ced80d1e2bc61035308ea87062` |
+| `frozen-validator.manifest.json` | (M source) | `2aafd0a369f527326b7f19adb9eb03b4b8b6a8457c8e7aa467c0b2f38dfc8195` |
 
 ## Toolchain closure (installed, not committed)
 

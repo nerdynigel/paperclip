@@ -307,13 +307,16 @@ const exitCode = await new Promise((resolve) => {
 });
 clearTimeout(deadline);
 
-/* V4-3: await terminal group proof before deciding success. */
+/* V4-residual 1: successful awaited group-reap AND stdio-close proof is required
+ * BEFORE any disposable cleanup. On nonterminal proof failure or evidence-write
+ * failure the work tree and evidence are preserved and a truthful nonzero code
+ * is returned. */
 await reapPromise;
 if (stdioCloseTimer) clearTimeout(stdioCloseTimer);
 const terminalOk =
   !supervisor.groupLiveAfterReap && !supervisor.residualAfterKill && !supervisor.stdioCloseTimedOut;
+supervisor.terminalProofOk = terminalOk;
 
-/* V4-3: durable evidence first; a failed write must preserve the work tree. */
 let evidenceFailure = false;
 try {
   fs.writeFileSync(path.join(context.dirs.output, "child-stdout.log"), Buffer.concat(stdoutChunks));
@@ -322,8 +325,9 @@ try {
 } catch {
   evidenceFailure = true;
 }
-
 if (evidenceFailure) process.exit(5);
+
+if (!terminalOk) process.exit(7);
 
 let cleanupFailure = false;
 try {
@@ -335,5 +339,4 @@ try {
 }
 if (cleanupFailure) process.exit(6);
 
-if (!terminalOk) process.exit(7);
 process.exit(overLimit ? 4 : exitCode);
