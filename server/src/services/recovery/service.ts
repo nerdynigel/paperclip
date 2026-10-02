@@ -901,6 +901,16 @@ export function recoveryService(
     ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
+    // Terminalizing a process-gone run does not itself release the run's
+    // environment lease. A hard server exit can leave an active lease behind,
+    // and a terminal run that still holds an unreleased lease blocks every
+    // continuation that reads the lease as a live execution owner. The owner
+    // of the lease lifecycle supplies this callback to reconcile the lease
+    // through the existing release path. It runs only after a confirmed
+    // process-death terminal write, so no live execution still owns the lease.
+    onProcessGoneRunTerminalized?: (
+      run: typeof heartbeatRuns.$inferSelect,
+    ) => Promise<void>;
   },
 ) {
   const issuesSvc = issueService(db);
@@ -5687,6 +5697,28 @@ export function recoveryService(
     // the stale lock below, so fire it and do not await it.
     void emitAgentTaskRun(db, updated);
     runningProcesses.delete(run.id);
+    // Reconcile the run's environment lease through the existing release
+    // lifecycle. Only a process-death terminalization qualifies: the recorded
+    // process and group are gone and no live controller owns the run, so the
+    // lease can be handed to the orphan teardown path without racing a live
+    // finalizer. The issue-terminal authority is excluded because its process
+    // may still be alive (the reuse-lease path). Best-effort: a failure leaves
+    // the lease for the periodic orphan reaper and must not abort the sweep.
+    if (authority === "process_gone") {
+      try {
+        await deps.onProcessGoneRunTerminalized?.(updated);
+      } catch {
+        // Log a constant errorKind only. A cleanup error can carry a
+        // credential in its name, code, message, cause, or stack.
+        logger.warn(
+          {
+            runId: run.id,
+            errorKind: "orphaned_run_lease_reconcile_failed",
+          },
+          "failed to reconcile the terminal run's environment lease; the orphan reaper will retry",
+        );
+      }
+    }
     // The run update above already committed the terminal status. The audit
     // event is best-effort: if the insert fails, the caller must still treat
     // the run as terminalized and clear the lock in the same sweep. So catch

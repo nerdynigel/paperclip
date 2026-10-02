@@ -6,6 +6,8 @@ import {
   agents,
   companies,
   createDb,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -46,6 +48,8 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
 
   afterEach(async () => {
     mockTelemetryClient.track.mockClear();
+    await db.delete(environmentLeases);
+    await db.delete(environments);
     await db.delete(nativeRunFinalizations);
     await db.delete(issueComments);
     await db.delete(issueRelations);
@@ -104,6 +108,93 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     ]);
 
     return { companyId, agentId, failedRunId, runningRunId };
+  }
+
+  // A local driver environment whose lease is a bookkeeping row with no
+  // external provider resource (provider "local", provider lease id null).
+  // This is the class the I1 recurrence stranded active.
+  async function seedLocalEnvironment(companyId: string): Promise<string> {
+    const environmentId = randomUUID();
+    await db.insert(environments).values({
+      id: environmentId,
+      companyId,
+      name: "Local host",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "local", image: "ubuntu:24.04" },
+    });
+    await db
+      .update(environments)
+      .set({ driver: "local", config: {} })
+      .where(eq(environments.id, environmentId));
+    return environmentId;
+  }
+
+  async function insertActiveLease(input: {
+    companyId: string;
+    environmentId: string | null;
+    heartbeatRunId: string;
+    provider?: string;
+    providerLeaseId?: string | null;
+    leasePolicy?: string;
+    updatedAt?: Date;
+  }): Promise<string> {
+    const id = randomUUID();
+    const at = input.updatedAt ?? new Date();
+    await db.insert(environmentLeases).values({
+      id,
+      companyId: input.companyId,
+      environmentId: input.environmentId,
+      heartbeatRunId: input.heartbeatRunId,
+      status: "active",
+      leasePolicy: input.leasePolicy ?? "ephemeral",
+      provider: input.provider ?? "local",
+      providerLeaseId: input.providerLeaseId ?? null,
+      metadata: { driver: "local" },
+      acquiredAt: at,
+      lastUsedAt: at,
+      createdAt: at,
+      updatedAt: at,
+    });
+    return id;
+  }
+
+  async function leaseRow(leaseId: string) {
+    return db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  // Seed a process-gone run referenced by a non-terminal issue, plus an active
+  // local lease. This is the exact restart-recovery shape: the recorded pid is
+  // absent, the issue is not terminal, so only process-death authority applies.
+  async function seedProcessGoneRunWithLocalLease() {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: 2_000_000_000 })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const environmentId = await seedLocalEnvironment(companyId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Hard-killed run with a stranded local lease",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+    const leaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runningRunId,
+    });
+    return { companyId, agentId, runningRunId, environmentId, issueId, leaseId };
   }
 
   it("clears lock columns when checkoutRunId points at a terminal heartbeat run", async () => {
@@ -891,5 +982,165 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runningRunId));
     expect(events).toEqual([]);
+  });
+
+  it("releases an active local lease after a process-gone run is terminalized (restart recovery)", async () => {
+    const { runningRunId, leaseId } =
+      await seedProcessGoneRunWithLocalLease();
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    const lease = await leaseRow(leaseId);
+    expect(lease?.status).toBe("expired");
+    expect(lease?.cleanupStatus).toBe("success");
+    expect(lease?.releasedAt).toBeInstanceOf(Date);
+  });
+
+  it("is idempotent: a second stale-lock sweep leaves the released lease unchanged", async () => {
+    const { runningRunId, leaseId } =
+      await seedProcessGoneRunWithLocalLease();
+
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.sweepStaleIssueLocks();
+    expect(first.terminalizedRunIds).toEqual([runningRunId]);
+    const releasedAt = (await leaseRow(leaseId))?.releasedAt;
+    expect(releasedAt).toBeInstanceOf(Date);
+
+    const second = await heartbeat.sweepStaleIssueLocks();
+    expect(second.terminalizedRunIds).toEqual([]);
+    expect(second.cleared).toBe(0);
+    const lease = await leaseRow(leaseId);
+    expect(lease?.status).toBe("expired");
+    expect(lease?.releasedAt?.getTime()).toBe(releasedAt?.getTime());
+  });
+
+  it("keeps a local lease active when the recorded process is still alive (live / reused pid)", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    // process.pid is the live test process, so isPidAlive returns true. A reused
+    // pid looks identical here; either way the run is not orphaned.
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: process.pid })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const environmentId = await seedLocalEnvironment(companyId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live run — lease must stay active",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+    const leaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runningRunId,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([]);
+    const lease = await leaseRow(leaseId);
+    expect(lease?.status).toBe("active");
+    expect(lease?.releasedAt).toBeNull();
+  });
+
+  it("keeps a local lease active when the referenced run is queued, not orphaned", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "queued" })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const environmentId = await seedLocalEnvironment(companyId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued run — lease must stay active",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+    const leaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runningRunId,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([]);
+    const lease = await leaseRow(leaseId);
+    expect(lease?.status).toBe("active");
+    expect(lease?.releasedAt).toBeNull();
+  });
+
+  it("preserves an external lease whose resource another live lease still owns", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db
+      .update(heartbeatRuns)
+      .set({ processPid: 2_000_000_000 })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    const environmentId = await seedLocalEnvironment(companyId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned lease must not tear down a live resource",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+    const sharedProviderLeaseId = "sandbox://fake/shared-resource";
+    const orphanLeaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runningRunId,
+      provider: "sandbox",
+      providerLeaseId: sharedProviderLeaseId,
+      leasePolicy: "reuse_by_environment",
+    });
+    // A replacement run still owns the same physical sandbox resource.
+    const replacementRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: replacementRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: replacementRunId,
+      provider: "sandbox",
+      providerLeaseId: sharedProviderLeaseId,
+      leasePolicy: "reuse_by_environment",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    const lease = await leaseRow(orphanLeaseId);
+    // The live replacement owns the resource, so the orphan stays untouched
+    // rather than expiring a sandbox another run is using.
+    expect(lease?.status).toBe("active");
+    expect(lease?.releasedAt).toBeNull();
   });
 });
