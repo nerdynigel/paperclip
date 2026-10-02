@@ -1,19 +1,26 @@
-# Frozen independent validator fixture — corrective v4 static publication (THE-567)
+# Frozen independent validator fixture — runtime-compat corrections + disposable Q probe (THE-567 → THE-574)
 
 Static authoring/publication only. This document and the host modules are a
 **proposal**. They prove no executed fixture correctness and no candidate
 acceptance. Independent certification is [THE-564](/THE/issues/THE-564); runtime QA is
 [THE-560](/THE/issues/THE-560).
 
-This revision implements the accepted corrective contract v4
+This revision (THE-574) is the SOURCE-ONLY runtime-compatibility correction and
+disposable Q probe implementation accepted against the THE-573 packet. It
+supersedes the V4-residual host bytes at `0cd724f789ce48d495e8b22e5a9b413b6b942ecf`
+(M `2aafd0a369f527326b7f19adb9eb03b4b8b6a8457c8e7aa467c0b2f38dfc8195`). The
+corrected host commit is `F'`; the corrected manifest SHA256 is
+`M' = d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0`. F'/Q full
+commit SHAs and paths are published in the THE-574 thread and PR3 head readback;
+this document is carried by the single task commit `F'`.
+
+It implements the V4 corrective contract
 ([corrective-contract-v1](/THE/issues/THE-571#document-corrective-contract-v1),
 revision `7bfcbc18-766d-4691-a0c5-79d231f3dcdb`, management-accepted
 [chief-contract-review-v4](/THE/issues/THE-571#document-chief-contract-review-v4))
-against the V2 review plus mandatory clarification
-([review-input-v2](/THE/issues/THE-567#document-review-input-v2), revisions
-`4cdeb6fb-a5ab-438a-ade6-a83453cb78dd` and `de73ebbf-5e54-46dc-a803-607bb735f701`).
-It supersedes `ee8f5711746976d13ff6e5d600acae02bc607440` / M
-`c94a2bd04571d151c59ffaf36cdbd090b339a6f8fead03420d353ee6efba363d`.
+plus the accepted runtime-closure packet
+([packet](/THE/issues/THE-573#document-artifact-review-c5000d63-4436-4a03-8490-d3f7a2dfc2d7),
+revision `d4551ff3-9e7f-40eb-921e-0812a03aa078`).
 
 ## Contracts implemented
 
@@ -84,16 +91,90 @@ Implements the three independent residuals at `cf5a4ebc`:
 - R3 Git shell refusal: `assertNoShell` refuses `shell:true` on the execFile, execFileSync, spawn and
   spawnSync paths before any child starts.
 
-## Host files (current bytes)
+## Host files (corrected bytes at F')
 
 | File | Git blob | SHA256 |
 | --- | --- | --- |
 | `frozen-validator-loader.mjs` | `40f0941e16b90a237c0cdf1e4da5d5f587ac85d5` | `c04757cac48813915108d439cfeb8fbff1207c9e8a373ae20cab77d9636d064f` |
-| `frozen-validator-bootstrap.mjs` | `816be7a13ab230c0b35de8694091ad6a4cd7210f` | `605173e368f42a97b45aa6ef67b021804d89f1f3402527c820528759b9659272` |
-| `frozen-validator-preload.mjs` | `ef1605c4b3ebe585cad113dc854920502773f60c` | `17879e8f6e42a39649d23f03f48a2fd45db85269996ecc27a66165395fe7c591` |
-| `frozen-validator.vitest.config.mjs` | `a4f422c8842b691dc15084b8cfa53e1a0d925279` | `a6016305163db24a74c8e7d1af2e979f46525b8a352f6143c682953fa6bcd26e` |
+| `frozen-validator-bootstrap.mjs` | `84df18464f25f8191c75d25249c423af4515f29b` | `172da41bc30d9b5cb68e29802aff110f5ef30997ae1571eee3d5e3290dbcc12f` |
+| `frozen-validator-preload.mjs` | `ee3e15af09ba3b659cbd7ca286442ce4c55332a7` | `dcc9fd51ef409327f3c4b6b50eeedd04429993b5d7665b8ac41e12573b9320be` |
+| `frozen-validator.vitest.config.mjs` | `f0b176f6ab4eea8a5bf1c988a8719eded8ae9acd` | `a5bed0ced096c814502a046e43bee7d288d3918f56cb250b88ff784a7960f554` |
 | `frozen-validator-independent.test.ts` | `d1613c555d09e57115bf2363d123b14f5886da29` | `b89c4034ee8be5350df4287fb4e9362071cb6f04092be1102e25a51ef9417a02` |
-| `frozen-validator.manifest.json` | (M source) | `2aafd0a369f527326b7f19adb9eb03b4b8b6a8457c8e7aa467c0b2f38dfc8195` |
+| `frozen-validator.manifest.json` | `b65ca44f0b566e53d9ca9215abb4ce2588da785d` | `d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0` |
+
+## Runtime-compatibility corrections (THE-574, acceptance 1)
+
+Source refs are the exact installed bytes in this H tree; all are read-only,
+non-evaluating inspections.
+
+| # | Correction | Source anchor | Exact host line |
+| --- | --- | --- | --- |
+| C1 | FORCE_TTY empty under pipe/no-TTY is the only admissible value; `true`/any other value and all unknown keys are refused | Vitest 4.1.11 `dist/chunks/cli-api.CnMVyzaz.js` `resolveOptions` (`FORCE_TTY: isatty(1) ? "true" : ""`) | preload `WORKER_ENV_ALLOW`/`WORKER_ENV_ALLOWED_VALUE` and `assertWorkerEnv` value guard (preload 111-146/287-301) |
+| C2 | Closed worker env: rebuilt from a sanitized base, `FORCE_TTY=""` preserved, framework values pinned, no inherited-env widening | Vitest `resolveOptions` env merge | preload `sanitizedWorkerBase` (`FORCE_TTY:""`) and `endowWorker` (preload 310-342) |
+| C3 | Supported native config-loader forwarding for the plain `.mjs`: Vitest CLI `configLoader` -> Vite inline `configLoader`; Vite `nativeImportConfigFile` imports with `import()` and writes no `node_modules/.vite-temp` in H | Vitest `dist/chunks/cac.uFydS1Z4.js` (`configLoader`), `cli-api` `createVitest` (`configLoader: options.configLoader`); Vite 8.2.2 `dist/node/chunks/node.js` `loadConfigFromFile`/`nativeImportConfigFile` (36958-37007) | bootstrap child argv `--configLoader native` (bootstrap 121-137) |
+| C4 | Explicit ordered SSR worker conditions `[node, production]` (no Vite default inference); production retained because bootstrap pins `NODE_ENV=production` (Vite `isProduction` at node.js 36707) | Vitest `resolveConditions` (`ssr.resolve.conditions` for Vite >= 6, in order) | config `ssr.resolve.conditions` (config 22-35) |
+
+Preserved unchanged: mandatory preload, exact worker argv/path/hash
+(`CERTIFIED_WORKER_EXECARGV`), run/role receipts, IPC ledger/count/seq, R1-R8,
+contracts A-F, the 31-case matrix, 11 candidate/5 base predicted-red assertions
+and refusal-before-child (`PARENT_DEATH_UNPROVED`, exit 7). `parentDeathProof`
+stays `null`.
+
+## Disposable Q probe (THE-574, acceptance 2)
+
+Separate pinned probe source under
+`server/src/__tests__/frozen-validator-probe/`. Built-ins only; no product,
+Git, DB, provider or network. This is not installable authority or a runtime
+PASS.
+
+| Q file | Git blob | SHA256 |
+| --- | --- | --- |
+| `probe-observer.mjs` | `f560a4ebe484e9905e9a7364e4c072dbe8c42af7` | `4aa06a6d18894cd82cb9e1eb4e1c6e00212ab91aef03d8f1a29ec0c5887d11c2` |
+| `probe-surrogate-supervisor.mjs` | `1f8508e622bf0cf85ab5e469684a48ed935eb2b2` | `5905d2afaee34dd64e111fa57736e2bc30ef42559c7160b5aa8bee0c5f4890f4` |
+| `probe-surrogate-child.mjs` | `ac6fcaf3e7255cc89a2c402a746aadb5f4c1c93d` | `030da657ac187fca83983a11a12cb506b47f562300327adc840ba2686b4ff331` |
+| `probe-worker-smoke.test.mjs` | `22b6a9896ce4cfd787978652dda29fe986a674a3` | `02cd77dd79ac46090920ae9249f87ac5b6637ef183e127f76c2bb527df26cd6d` |
+| `probe-worker-smoke.vitest.config.mjs` | `016bda6c17f377156069fe1eeba925b63ce1837a` | `21560612f38e6fdda80fe6800395068f48871e5389be2d8ea0bf8d832c8f299a` |
+| `probe-preload.mjs` | `92d0fd3a22f3aaf58cbe602b571802d5e205f9aa` | `b297ec50c608a5a03444b48979c399a54d13f3b4870fe059540411fe37500fd6` |
+
+Q entry token = `probe-observer.mjs`; mode operand is `normal-close`,
+`bootstrap-kill` or `worker-smoke`. It enforces: max 4 disposable Node
+processes; hard 10s; self-expiry 3s (defense-in-depth, never parent-death
+proof); observation at 750ms before self-expiry with `TERM`/`KILL` 500ms;
+awaited <=2s reap/stdio close; output <=1MiB, row <=64KiB, owned disk scratch
+<=4MiB; owned PID/starttime/PGID/scope plus metadata-only `/proc` reads. Unknown
+ownership, timeout, missing-ready or residual state fails closed. Observer
+rescue is recorded separately and is never positive containment. No live
+process is killed. `normal-close` is positive terminal cleanup only; the
+`bootstrap-kill` mode kills only its own disposable supervisor and distinguishes
+self-expiry, rescue and residual, always reporting `containment: "unproved"`.
+
+## Criterion-to-line map (THE-574, acceptance 3)
+
+| Acceptance | Implemented at |
+| --- | --- |
+| FORCE_TTY empty, reject other/unknown | preload `WORKER_ENV_ALLOW`, `WORKER_ENV_ALLOWED_VALUE`, `assertWorkerEnv` |
+| Closed worker env | preload `sanitizedWorkerBase`, `endowWorker` |
+| Native config-loader pin | bootstrap `--configLoader native`; config docs |
+| Ordered SSR `[node,production]` | config `ssr.resolve.conditions` |
+| No `.vite-temp`/fallback widening | `nativeImportConfigFile` route only; loader `resolveViteEntry` root-link/ancestor refusal unchanged |
+| Q observer/normal-close/bootstrap-kill | `probe-observer.mjs`, `probe-surrogate-supervisor.mjs`, `probe-surrogate-child.mjs` |
+| Q worker-smoke fixture/config/lifecycle | `probe-worker-smoke.test.mjs`, `probe-worker-smoke.vitest.config.mjs`, `probe-preload.mjs` |
+| parentDeathProof:null intact | manifest `containment.parentDeathProof`; bootstrap exit 7; Q `parentDeathProof: null` |
+
+## Closure differences from F=0cd724f7
+
+- `frozen-validator-bootstrap.mjs`: added `--configLoader native` to the exact
+  main Vitest child argv (sha `172da41b...`).
+- `frozen-validator-preload.mjs`: added the single admissible `FORCE_TTY=""`
+  key/value and closed-base `FORCE_TTY:""` (sha `dcc9fd51...`).
+- `frozen-validator.vitest.config.mjs`: added explicit `ssr.resolve.conditions`
+  `[node, production]` (sha `a5bed0ce...`).
+- `frozen-validator.manifest.json`: updated the three host blob/SHA pins
+  (M' `d2ccdee9...`).
+- New `frozen-validator-probe/` Q sources (six files above).
+- Unchanged: `frozen-validator-loader.mjs`, `frozen-validator-independent.test.ts`,
+  and every C/B role pin.
+
 
 ## Toolchain closure (installed, not committed)
 
@@ -118,30 +199,61 @@ base descendant `missing_git_metadata`, and candidate descendant success preserv
 
 ## Token templates (not execution permission)
 
-F = corrected host commit; M = manifest SHA256 (above); N = certified Node path.
-All are pending Verification binding.
+F' = corrected host commit; M' = `d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0`;
+N = certified Node path. All are pending Verification binding.
 
 ```text
-/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 29bf67512aabd7b461a30e546c195e28c37f219e --cases the-560-validator-independent-candidate -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role candidate --host-sha <F> --manifest-sha256 <M> --node <N>
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 29bf67512aabd7b461a30e546c195e28c37f219e --cases the-560-validator-independent-candidate -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role candidate --host-sha <F'> --manifest-sha256 <M'> --node <N>
 
-/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 871532c335bb8c0f501a200201f4e4ac1fc63fb0 --cases the-560-validator-independent-base -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role base --host-sha <F> --manifest-sha256 <M> --node <N>
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 871532c335bb8c0f501a200201f4e4ac1fc63fb0 --cases the-560-validator-independent-base -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role base --host-sha <F'> --manifest-sha256 <M'> --node <N>
 ```
 
-Child argv: `<N> --import <H>/server/src/__tests__/frozen-validator-preload.mjs
-<H>/node_modules/vitest/vitest.mjs run --config
+Child argv (unchanged plus the native config-loader pin): `<N> --import
+<H>/server/src/__tests__/frozen-validator-preload.mjs
+<H>/node_modules/vitest/vitest.mjs run --configLoader native --config
 <H>/server/src/__tests__/frozen-validator.vitest.config.mjs --pool=forks
 --maxWorkers=1 --no-file-parallelism
 <H>/server/src/__tests__/frozen-validator-independent.test.ts`.
 
+Q probe argv (one canonical Q path/full commit + SHA256; replace `<Q>` before any
+matcher/application; three serialized invocations, no shell chain; cwd H):
+
+```text
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 0cd724f789ce48d495e8b22e5a9b413b6b942ecf --cases the-573-probe-normal-close -- <N> <Q> normal-close
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 0cd724f789ce48d495e8b22e5a9b413b6b942ecf --cases the-573-probe-bootstrap-kill -- <N> <Q> bootstrap-kill
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 0cd724f789ce48d495e8b22e5a9b413b6b942ecf --cases the-573-probe-worker-smoke -- <N> <Q> worker-smoke
+```
+
+All v5 helper hash/max4G/identity/admission`600/180/1800/600`/min780s/shared
+`heavy.lock` serialization rules are unchanged. No schema accepts invented proof
+or permission, and no native load/export branch is widened.
+
 ## Honest limits
 
-- Not executed. No fixture, Vitest, Vite, helper, install, build or product load.
-- F and M prime are published; N and the detached parent-death containment remain
-  explicitly held prerequisites. `parentDeathContainment` is `unproved` and the
-  runtime supervision gate fails closed.
+- Not executed. No fixture, module, native, helper, Q payload, Vitest, Vite,
+  build or product load. All Q/F bytes are static and unproved at runtime.
+- F', M' and Q are published; N and the detached parent-death containment remain
+  explicitly held prerequisites. `parentDeathProof` stays `null`; the fixture
+  refuses before any child (exit 7) and Q always reports containment
+  `unproved`. The Q containment observations are expected negative with the
+  current topology and are never a runtime PASS.
+- Framework/native/IPC runtime compatibility remains UNPROVED: the Vitest
+  `--experimental-import-meta-resolve`/`--require`/`--conditions`/IPC composition,
+  Vite effective config and `module-sync`/external import behavior, resolved
+  config conditions and worker option compatibility were read from source, not
+  executed.
+- Native ABI/linker/thread/bootstrap-containment gaps remain open: rolldown and
+  lightningcss platform binaries, the rust `ldd`/`process.report` selection and
+  `/tmp/rolldown-1.2.5` WASI fallback (excluded, not granted), optional
+  non-host platform packages and fsevents, and Node's lower-level fork
+  expansion/IPC descriptor/thread effects. Effective Verification authority for
+  the exact commands is still a Board-only read-back, not supplied here.
 - Full third-party/native/conditional export and workspace dependency closure
   remains owned by [THE-563](/THE/issues/THE-563); this design does not certify it.
 - The ledger traces are illustrative static arithmetic, not measured Git totals.
+- [THE-559](/THE/issues/THE-559)/[THE-560](/THE/issues/THE-560) and the original
+  repair/activation/merge remain held. Independent recertification is a separate
+  Chief-direct successor.
 
 ## Rollback
 

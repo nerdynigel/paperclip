@@ -103,16 +103,16 @@
       "sha256": "c04757cac48813915108d439cfeb8fbff1207c9e8a373ae20cab77d9636d064f"
     },
     "server/src/__tests__/frozen-validator-bootstrap.mjs": {
-      "blob": "816be7a13ab230c0b35de8694091ad6a4cd7210f",
-      "sha256": "605173e368f42a97b45aa6ef67b021804d89f1f3402527c820528759b9659272"
+      "blob": "84df18464f25f8191c75d25249c423af4515f29b",
+      "sha256": "172da41bc30d9b5cb68e29802aff110f5ef30997ae1571eee3d5e3290dbcc12f"
     },
     "server/src/__tests__/frozen-validator-preload.mjs": {
-      "blob": "ef1605c4b3ebe585cad113dc854920502773f60c",
-      "sha256": "17879e8f6e42a39649d23f03f48a2fd45db85269996ecc27a66165395fe7c591"
+      "blob": "ee3e15af09ba3b659cbd7ca286442ce4c55332a7",
+      "sha256": "dcc9fd51ef409327f3c4b6b50eeedd04429993b5d7665b8ac41e12573b9320be"
     },
     "server/src/__tests__/frozen-validator.vitest.config.mjs": {
-      "blob": "a4f422c8842b691dc15084b8cfa53e1a0d925279",
-      "sha256": "a6016305163db24a74c8e7d1af2e979f46525b8a352f6143c682953fa6bcd26e"
+      "blob": "f0b176f6ab4eea8a5bf1c988a8719eded8ae9acd",
+      "sha256": "a5bed0ced096c814502a046e43bee7d288d3918f56cb250b88ff784a7960f554"
     },
     "server/src/__tests__/frozen-validator-independent.test.ts": {
       "blob": "d1613c555d09e57115bf2363d123b14f5886da29",

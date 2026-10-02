@@ -122,6 +122,13 @@ const childArgs = [
   "--import", preloadFile,
   vitestEntry,
   "run",
+  // Source-backed config-loader pin: Vitest 4.1.11 forwards its CLI
+  // `configLoader` option (dist/chunks/cac.uFydS1Z4.js -> cli-api configLoader)
+  // to Vite's createServer inline config. Vite 8.2.2
+  // dist/node/chunks/node.js loadConfigFromFile accepts 'native' and
+  // nativeImportConfigFile imports the plain .mjs without the bundle loader or
+  // any node_modules/.vite-temp write inside H. No fallback broaden.
+  "--configLoader", "native",
   "--config", configFile,
   "--pool=forks",
   "--maxWorkers=1",

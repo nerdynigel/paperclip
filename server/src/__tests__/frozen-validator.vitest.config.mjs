@@ -20,6 +20,17 @@ const ceilings = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8")).ceilings;
 
 export default {
   root: HOST_ROOT,
+  // Source-backed ordered worker conditions. Vitest 4.1.11
+  // dist/chunks/cli-api.CnMVyzaz.js resolveConditions() maps, for Vite >= 6,
+  // `ssr.resolve.conditions` in order into worker `--conditions` tokens. Pinning
+  // exactly [node, production] makes the certified worker execArgv deterministic;
+  // `production` is retained because the bootstrap pins NODE_ENV=production, which
+  // Vite resolves into isProduction. This is not a fallback or a widened load.
+  ssr: {
+    resolve: {
+      conditions: ["node", "production"],
+    },
+  },
   test: {
     include: [TEST_FILE],
     projects: false,

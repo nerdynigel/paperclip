@@ -117,6 +117,20 @@ const WORKER_ENV_ALLOW = new Set([
   "PC_FROZEN_VALIDATOR_GIT_ALLOCATION", "PC_FROZEN_VALIDATOR_GIT_OBSERVED_BASE",
   "PAPERCLIP_RUN_ID", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID",
   "TEST", "VITEST", "VITEST_MODE", "VITEST_POOL_ID", "VITEST_WORKER_ID",
+  // Source-backed (Vitest 4.1.11 dist/chunks/cli-api.CnMVyzaz.js resolveOptions):
+  // the framework injects `FORCE_TTY: isatty(1) ? "true" : ""` into the worker
+  // env. Under this fixture the stdio graph is always pipe/no-TTY, so the only
+  // admissible value is the empty string. A missing key is tolerated; any other
+  // value is refused below. This is NOT a general inherited-env widening.
+  "FORCE_TTY",
+]);
+
+/* Source-backed admissible worker-env values (key -> the single allowed value). */
+const WORKER_ENV_ALLOWED_VALUE = new Map([
+  ["NODE_ENV", "production"],
+  ["TEST", "true"],
+  ["VITEST", "true"],
+  ["FORCE_TTY", ""],
 ]);
 
 function refuse(code, message) {
@@ -269,6 +283,13 @@ function assertWorkerEnv(env) {
   if (!env || typeof env !== "object") refuse("CHILD_FORBIDDEN", "worker env must be an object");
   for (const key of Object.keys(env)) {
     if (!WORKER_ENV_ALLOW.has(key)) refuse("CHILD_FORBIDDEN", `unapproved worker env key: ${key}`);
+    const allowedValue = WORKER_ENV_ALLOWED_VALUE.get(key);
+    if (allowedValue !== undefined && env[key] !== allowedValue) {
+      refuse("CHILD_FORBIDDEN", `worker env value for ${key} is not the single admitted value`);
+    }
+  }
+  if (env.FORCE_TTY !== undefined && env.FORCE_TTY !== "") {
+    refuse("CHILD_FORBIDDEN", "FORCE_TTY may only be the empty pipe/no-TTY value");
   }
 }
 
@@ -305,6 +326,8 @@ function sanitizedWorkerBase() {
     NODE_ENV: "production",
     PAPERCLIP_LOG_LEVEL: "silent",
     PAPERCLIP_RUN_SCRATCH_DIR: context.scratch,
+    // Closed canonical framework value: pipe/no-TTY graph always yields empty.
+    FORCE_TTY: "",
   };
 }
 
