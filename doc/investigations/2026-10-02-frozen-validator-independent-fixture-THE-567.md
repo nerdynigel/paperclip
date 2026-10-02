@@ -5,19 +5,21 @@ Static authoring/publication only. This document and the host modules are a
 acceptance. Independent certification is [THE-564](/THE/issues/THE-564); runtime QA is
 [THE-560](/THE/issues/THE-560).
 
-This revision (THE-574 F″) is the SOURCE-ONLY runtime-compatibility correction and
+This revision (THE-574 F‴) is the SOURCE-ONLY runtime-compatibility correction and
 disposable Q probe implementation accepted against the THE-573 packet, with the
 Q source corrected against the independent [THE-575 adverse
-checkpoint](/THE/issues/THE-575#document-independent-adverse-checkpoint-c0a7d4a8)
-at `c0a7d4a8cbdd95088c7fa84ca9948d7c93c55613` and the [Chief correction
+checkpoints](/THE/issues/THE-575#document-independent-adverse-checkpoint-c0a7d4a8)
+(`c0a7d4a8cbdd95088c7fa84ca9948d7c93c55613`) and
+[d92e672a](/THE/issues/THE-575#document-independent-adverse-checkpoint-d92e672a)
+(`d92e672a2437bf906912629282288f3d6ce2b493`) plus the [Chief correction
 handoff](/THE/issues/THE-574#document-chief-q-correction-handoff). It supersedes
 the V4-residual host bytes at `0cd724f789ce48d495e8b22e5a9b413b6b942ecf`
 (M `2aafd0a369f527326b7f19adb9eb03b4b8b6a8457c8e7aa467c0b2f38dfc8195`). The
-corrected host commit is `F″`; the corrected manifest SHA256 is
-`M″ = d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0` (unchanged
+corrected host commit is `F‴`; the corrected manifest SHA256 is
+`M‴ = d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0` (unchanged
 from F′, since the runtime-compat host bytes are untouched by the Q correction).
-F″/Q full commit SHAs and paths are published in the THE-574 thread and PR3 head
-readback; this document is carried by the task branch head `F″`.
+F‴/Q full commit SHAs and paths are published in the THE-574 thread and PR3 head
+readback; this document is carried by the task branch head `F‴`.
 
 It implements the V4 corrective contract
 ([corrective-contract-v1](/THE/issues/THE-571#document-corrective-contract-v1),
@@ -96,7 +98,7 @@ Implements the three independent residuals at `cf5a4ebc`:
 - R3 Git shell refusal: `assertNoShell` refuses `shell:true` on the execFile, execFileSync, spawn and
   spawnSync paths before any child starts.
 
-## Host files (corrected bytes at F″)
+## Host files (corrected bytes at F‴)
 
 | File | Git blob | SHA256 |
 | --- | --- | --- |
@@ -134,7 +136,7 @@ PASS.
 
 | Q file | Git blob | SHA256 |
 | --- | --- | --- |
-| `probe-observer.mjs` | `cc122e06087a341443ec30ed72569aed4fa6cf66` | `08b683bf423ff687b73c707b93469e3dc1d2a247d1d91f0a5d2d9abfe9b34b45` |
+| `probe-observer.mjs` | `d211ed737ea34083d75b0155d902bbfa962afa02` | `4929a79ff9efb6b98fa9680d667c98e7d471125ec7b479f8baadf602324f58f1` |
 | `probe-surrogate-supervisor.mjs` | `b53e465151f69e8924e7168006e356a96d15d1e7` | `5631a7bcf1825f1fe01056d09cf828e95eef5c3de1bd41ece7a45014f47ed4e0` |
 | `probe-surrogate-child.mjs` | `ac6fcaf3e7255cc89a2c402a746aadb5f4c1c93d` | `030da657ac187fca83983a11a12cb506b47f562300327adc840ba2686b4ff331` |
 | `probe-worker-smoke.test.mjs` | `22b6a9896ce4cfd787978652dda29fe986a674a3` | `02cd77dd79ac46090920ae9249f87ac5b6637ef183e127f76c2bb527df26cd6d` |
@@ -165,6 +167,25 @@ Every row is a static source change; no Q execution.
 | limits not enforced | `record()` uses UTF-8 byte length (row <=64KiB, aggregate incl. supervisor channels <=1MiB); `accountChannel()`; `measureTreeBytes()` enforces <=4MiB owned scratch; `liveOwned()` enforces max4 (`probe-observer.mjs` 74-102, 207-234, 274-309) |
 | cumulative reap intervals | one absolute `deadlineAt` per phase (`observer373-384` fixed): normal-close = start+2s; bootstrap-kill = killAt+3s+2s; finalize = min(hardDeadline, now+2s) (`probe-observer.mjs` 312-336) |
 | smoke lifecycle/compat | `probe-preload.mjs` verifies pinned forks-worker SHA256, exact execArgv, execPath/cwd/stdio/serialization/env; relays request/response; observer requires ordered `start/started/run/testfileFinished` (+ optional `stop/stopped`) and fails on missing/unexpected/out-of-order (`probe-observer.mjs` 539-580, `probe-preload.mjs` 44-170) |
+
+## F‴ corrections against the d92e672a adverse rows
+
+Every row is a static control-flow change to `probe-observer.mjs`; no Q
+execution.
+
+| d92e672a adverse row | F‴ correction |
+| --- | --- |
+| `pendingFailure` poisons `liveOwned`, so ceiling failures skip owned kill and reap | failure is now a non-gating `failure` record (`noteFailure`); `liveOwned()` never throws and never consults failure; `finalize()` always runs `killOwnedGroups()` when requested; no fabricated terminal success (exit 3 on any failure) |
+| `owned.size` ceiling excludes the observer | `totalProcessCount() = owned.size + 1`; ceiling is `> maxProcesses` (max4 total); `PROCESS_CEILING` noted but enumeration still returns all owned for cleanup |
+| `killOwnedGroups` signals saved PGIDs without renewed validation | `groupHasVerifiedMember(pgid)` re-reads `/proc` at signal time and requires a live member with matching recorded PID/starttime/current PGID or owned ancestry under the min-starttime scope; otherwise the signal is refused and recorded |
+| extra 250ms + a fresh finalize `<=2s` window | `awaitTerminal` has no sub-window; `finalize` uses one shared `deadlineAt` (`min(hardDeadline, phase deadline)`), so no cumulative interval |
+| scratch ceiling detected only after writing | `writeEvidence()` budgets `current + payload` against 4MiB before writing; on overflow it writes only a bounded truncation marker and never exceeds the cap |
+| final doc `...extra` can overwrite measured terminal | authoritative measured fields (`terminal`, `liveOwned`, `rescueUsed`, `unknownOwnership`, `totalProcesses`, `failureCode`, limits, byte counts) are placed after `...extra` |
+
+Residual (UNPROVED, documented): a metadata-only `/proc` revalidation immediately
+before `kill(-pgid)` cannot eliminate a PID/PGID-reuse race between the check and
+the signal; no pidfd is available to this probe. This is a static limitation, not
+a runtime proof.
 
 ## Criterion-to-line map (THE-574, acceptance 3)
 
@@ -203,6 +224,13 @@ Changed Q only (host/M″ unchanged): `probe-observer.mjs`, `probe-preload.mjs`,
 `probe-surrogate-supervisor.mjs`. Unchanged Q: `probe-surrogate-child.mjs`,
 `probe-worker-smoke.test.mjs`, `probe-worker-smoke.vitest.config.mjs`.
 
+### F‴ vs F″ (`d92e672a`)
+
+Changed Q only (host/M‴ unchanged): `probe-observer.mjs`
+(`d211ed737ea34083d75b0155d902bbfa962afa02` /
+`4929a79ff9efb6b98fa9680d667c98e7d471125ec7b479f8baadf602324f58f1`). All other Q
+and host bytes unchanged.
+
 
 
 ## Toolchain closure (installed, not committed)
@@ -228,13 +256,13 @@ base descendant `missing_git_metadata`, and candidate descendant success preserv
 
 ## Token templates (not execution permission)
 
-F″ = corrected host commit; M″ = `d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0`;
+F‴ = corrected host commit; M‴ = `d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0`;
 N = certified Node path. All are pending Verification binding.
 
 ```text
-/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 29bf67512aabd7b461a30e546c195e28c37f219e --cases the-560-validator-independent-candidate -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role candidate --host-sha <F″> --manifest-sha256 <M″> --node <N>
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 29bf67512aabd7b461a30e546c195e28c37f219e --cases the-560-validator-independent-candidate -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role candidate --host-sha <F‴> --manifest-sha256 <M‴> --node <N>
 
-/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 871532c335bb8c0f501a200201f4e4ac1fc63fb0 --cases the-560-validator-independent-base -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role base --host-sha <F″> --manifest-sha256 <M″> --node <N>
+/home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 871532c335bb8c0f501a200201f4e4ac1fc63fb0 --cases the-560-validator-independent-base -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role base --host-sha <F‴> --manifest-sha256 <M‴> --node <N>
 ```
 
 Child argv (unchanged plus the native config-loader pin): `<N> --import
@@ -261,7 +289,7 @@ or permission, and no native load/export branch is widened.
 
 - Not executed. No fixture, module, native, helper, Q payload, Vitest, Vite,
   build or product load. All Q/F bytes are static and unproved at runtime.
-- F″, M″ and Q are published; N and the detached parent-death containment remain
+- F‴, M‴ and Q are published; N and the detached parent-death containment remain
   explicitly held prerequisites. `parentDeathProof` stays `null`; the fixture
   refuses before any child (exit 7) and Q always reports containment
   `unproved`. The Q containment observations are expected negative with the
