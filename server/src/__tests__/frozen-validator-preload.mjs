@@ -1,186 +1,303 @@
 /**
- * Frozen validator worker preload (THE-567 corrected static publication).
+ * Frozen validator worker preload (THE-567, corrective contract v4).
  *
  * Runs via `node --import` before Vitest evaluates its config or the fixture.
- * It repeats the role/identity/containment guards, then installs a counted Git
- * and child supervision layer before any product module loads. Built-ins only
- * plus the host loader guard module (itself built-ins only).
+ * Repeats the attach-phase guards, then installs the exact-token Git policy and
+ * the compatible child_process surface with monotonic aggregate accounting.
  *
- * Proposed static interface; unexecuted and unproved.
+ * STATIC / UNEXECUTED. Built-ins plus the host loader guard module only.
  */
 
 import { createRequire, syncBuiltinESMExports } from "node:module";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
-  buildValidatedRoleContext,
-  FROZEN_VALIDATOR_LOADER_PATH,
+  debitLedger,
+  FixtureGuardError,
+  getValidatedRoleContext,
+  planGitLaunch,
+  returnLedgerTransfer,
+  transferLedger,
 } from "./frozen-validator-loader.mjs";
 
-function report(message) {
+const context = getValidatedRoleContext();
+const ledger = context.ledger;
+const instanceId = randomUUID();
+const parentInstanceId = process.env.PC_FROZEN_VALIDATOR_INSTANCE_ID ?? null;
+let seq = 0;
+
+function sendUp(message) {
   if (typeof process.send === "function") {
     try {
-      process.send(message);
+      if (process.send(message) === false) context.ipcBackpressure = (context.ipcBackpressure ?? 0) + 1;
     } catch {
-      /* supervised IPC unavailable; local counters still enforce */
+      context.ipcDisconnected = true;
     }
   }
 }
 
-const context = buildValidatedRoleContext({
-  reporter: (accounting) => report({ type: "frozen-validator-git", delta: 0, total: accounting.gitCalls }),
-});
+function reportDebit() {
+  seq += 1;
+  sendUp({
+    v: 4,
+    instanceId,
+    parentInstanceId,
+    seq,
+    delta: 1,
+    spent: ledger.spent,
+    remaining: ledger.remaining,
+  });
+}
+
+function forwardUpstream(message) {
+  if (message && typeof message === "object" && message.type === "frozen-validator-git") sendUp(message);
+}
 
 const require = createRequire(import.meta.url);
 const childProcess = require("node:child_process");
-
 const RAW = {
   execFile: childProcess.execFile,
   execFileSync: childProcess.execFileSync,
   spawn: childProcess.spawn,
+  spawnSync: childProcess.spawnSync,
   fork: childProcess.fork,
 };
 
-const policy = context.manifest.gitPolicy ?? {};
-const setupSubcommands = new Set(policy.allowedSetupSubcommands ?? []);
-const readSubcommands = new Set(policy.allowedReadSubcommands ?? []);
-const forbiddenFlags = new Set(policy.forbiddenFlags ?? []);
-const PINNED_VITEST = path.join(context.hostRoot, "node_modules/vitest/vitest.mjs");
+const reposRoot = path.resolve(context.dirs.repos);
 const PINNED_PRELOAD = path.join(context.hostRoot, "server/src/__tests__/frozen-validator-preload.mjs");
 
-let gitCount = context.git.budget.count;
-const gitLimit = context.ceilings.gitCallsPerRole;
-
 function refuse(code, message) {
-  const error = new Error(`${code}: ${message}`);
-  error.code = code;
-  throw error;
+  throw new FixtureGuardError(code, message);
 }
 
-function assertContainedCwd(cwd) {
-  if (typeof cwd !== "string" || !path.isAbsolute(cwd)) {
-    refuse("GIT_CWD", "git cwd must be an absolute owned path");
-  }
-  const resolved = path.resolve(cwd);
-  const repos = path.resolve(context.dirs.repos);
-  const rel = path.relative(repos, resolved);
-  if (!(rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel)))) {
-    refuse("GIT_CWD_ESCAPE", `git cwd is outside the owned repos root: ${resolved}`);
-  }
+/* Contract D: Rule A debit for every admitted Git launch (leaf). */
+function admitGit(plan) {
+  debitLedger(ledger, 1);
+  reportDebit();
+  return plan;
 }
 
-function classifyGit(args) {
-  if (!Array.isArray(args) || typeof args[0] !== "string") {
-    refuse("GIT_ARGS", "git argv must start with a subcommand string");
-  }
-  for (const arg of args) {
-    if (typeof arg !== "string") refuse("GIT_ARGS", "git argv entries must be strings");
-    const flag = arg.split("=", 1)[0];
-    if (forbiddenFlags.has(flag)) {
-      refuse("GIT_FORBIDDEN_FLAG", `git flag is not permitted: ${flag}`);
-    }
-  }
-  if (!readSubcommands.has(args[0]) && !setupSubcommands.has(args[0])) {
-    refuse("GIT_SUBCOMMAND", `git subcommand is not permitted: ${args[0]}`);
-  }
-  return setupSubcommands.has(args[0]) ? "setup" : "read";
-}
-
-function countGit() {
-  gitCount += 1;
-  report({ type: "frozen-validator-git", delta: 1, total: gitCount });
-  if (gitCount > gitLimit) {
-    refuse("GIT_BUDGET", `aggregate Git ceiling exceeded (${gitLimit})`);
-  }
-}
-
-function hardenedGitOptions(options) {
-  const options2 = { ...(options ?? {}) };
+function hardenedGitOptions(options, cwd) {
   return {
-    ...options2,
-    env: context.git.env,
+    ...(options ?? {}),
+    cwd,
+    env: { ...context.git.env, GIT_CEILING_DIRECTORIES: reposRoot },
     timeout: context.ceilings.gitCallTimeoutMs,
     maxBuffer: context.ceilings.gitCallMaxOutputBytes,
   };
 }
 
-function sanitizeError(error) {
-  if (!error || typeof error !== "object") return error;
-  const scrubbed = new Error(String(error.message ?? "git failure").replaceAll(context.scratch, "<scratch>"));
-  scrubbed.code = error.code;
-  return scrubbed;
+function decorate(error, stdout, stderr) {
+  const target = new Error(error?.message ?? "launch failure");
+  target.code = error?.code;
+  target.signal = error?.signal;
+  target.cmd = error?.cmd;
+  target.killed = error?.killed;
+  target.stdout = stdout;
+  target.stderr = stderr;
+  return target;
 }
 
-function guardedExecFileSync(file, args, options) {
-  if (file !== "git") refuse("CHILD_FORBIDDEN", "only git may run through execFileSync");
-  classifyGit(args);
-  assertContainedCwd(options?.cwd);
-  countGit();
-  try {
-    return RAW.execFileSync(file, args, hardenedGitOptions(options));
-  } catch (error) {
-    throw sanitizeError(error);
+/* ------------------------------------------------------------------------- */
+/* Contract C: normalize / admit / launch with compatible promisify surface   */
+/* ------------------------------------------------------------------------- */
+
+function normalizeExecFileArgs(file, args, options, callback) {
+  let normalizedArgs = [];
+  let normalizedOptions = {};
+  let normalizedCallback = null;
+  if (Array.isArray(args)) {
+    normalizedArgs = args;
+    if (typeof options === "function") normalizedCallback = options;
+    else {
+      normalizedOptions = options ?? {};
+      normalizedCallback = typeof callback === "function" ? callback : null;
+    }
+  } else if (typeof args === "function") {
+    normalizedCallback = args;
+  } else if (args && typeof args === "object") {
+    normalizedOptions = args;
+    normalizedCallback = typeof options === "function" ? options : null;
+  } else if (args === undefined || args === null) {
+    normalizedOptions = typeof options === "object" && options !== null ? options : {};
+    normalizedCallback = typeof callback === "function" ? callback : null;
+  } else {
+    throw new TypeError("execFile: invalid argument shape");
   }
+  if (typeof file !== "string") throw new TypeError("execFile: file must be a string");
+  if (!Array.isArray(normalizedArgs)) throw new TypeError("execFile: args must be an array");
+  return { file, args: normalizedArgs, options: normalizedOptions, callback: normalizedCallback };
+}
+
+function admitLaunch(norm) {
+  if (norm.file !== "git") {
+    refuse("CHILD_FORBIDDEN", "only admitted Git or the pinned worker may launch");
+  }
+  const plan = planGitLaunch({ args: norm.args, cwd: norm.options.cwd, reposRoot });
+  admitGit(plan);
+  return plan;
+}
+
+function launchAdmitted(plan, norm, callback) {
+  return RAW.execFile(
+    "git",
+    plan.argv,
+    hardenedGitOptions(norm.options, plan.cwd),
+    callback,
+  );
 }
 
 function guardedExecFile(file, args, options, callback) {
-  let opts = options;
-  let cb = callback;
-  if (typeof opts === "function") {
-    cb = opts;
-    opts = {};
+  const norm = normalizeExecFileArgs(file, args, options, callback);
+  let plan;
+  try {
+    plan = admitLaunch(norm);
+  } catch (refusal) {
+    if (typeof norm.callback === "function") throw refusal;
+    return Promise.reject(refusal);
   }
-  if (file !== "git") {
-    const error = new Error("CHILD_FORBIDDEN: only git may run through execFile");
-    if (typeof cb === "function") return cb(error);
-    throw error;
+  if (typeof norm.callback === "function") {
+    return launchAdmitted(plan, norm, (error, stdout, stderr) =>
+      norm.callback(error ? decorate(error, stdout, stderr) : null, stdout, stderr),
+    );
   }
-  classifyGit(args);
-  assertContainedCwd(opts?.cwd);
-  countGit();
-  return RAW.execFile(file, args, hardenedGitOptions(opts), (error, stdout, stderr) => {
-    if (typeof cb === "function") cb(error ? sanitizeError(error) : null, stdout, stderr);
-  });
+  return promisifiedExecFile(norm, plan);
 }
 
-function isPinnedWorkerSpawn(file, args) {
+function promisifiedExecFile(norm, plan) {
+  let setResult = null;
+  let buffered = null;
+  const promise = new Promise((resolve, reject) => {
+    setResult = { resolve, reject };
+  });
+  const onSettled = (error, stdout, stderr) => {
+    const action = error
+      ? () => setResult.reject(decorate(error, stdout, stderr))
+      : () => setResult.resolve({ stdout, stderr });
+    if (setResult) action();
+    else buffered = action;
+  };
+  let child;
+  try {
+    child = launchAdmitted(plan, norm, onSettled);
+  } catch (launchError) {
+    return Promise.reject(decorate(launchError));
+  }
+  if (buffered) buffered();
+  promise.child = child;
+  promise.kill = (signal) => child.kill(signal ?? "SIGTERM");
+  return promise;
+}
+
+function guardedExecFileSync(file, args, options) {
+  if (file !== "git") refuse("CHILD_FORBIDDEN", "only admitted Git may run through execFileSync");
+  const norm = normalizeExecFileArgs(file, args, options);
+  const plan = admitLaunch(norm);
+  return RAW.execFileSync("git", plan.argv, hardenedGitOptions(norm.options, plan.cwd));
+}
+
+/* ------------------------------------------------------------------------- */
+/* Contract D + exact worker graph for spawn/spawnSync/fork                   */
+/* ------------------------------------------------------------------------- */
+
+function isPinnedWorkerInvocation(file, args) {
   if (file !== process.execPath) return false;
   const list = Array.isArray(args) ? args : [];
-  return list.includes(PINNED_VITEST) || list.includes(PINNED_PRELOAD);
+  const importValues = [];
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i] === "--import" && typeof list[i + 1] === "string") importValues.push(list[i + 1]);
+  }
+  if (importValues.some((value) => value !== PINNED_PRELOAD)) return false;
+  const hasVitest = list.some((token) => typeof token === "string" && token.endsWith(path.join("vitest", "vitest.mjs")));
+  const hasPoolWorker = list.some((token) => typeof token === "string" && token.includes("tinypool"));
+  return hasVitest || hasPoolWorker;
+}
+
+function endowWorker(options) {
+  const allocation = transferLedger(ledger);
+  const childInstanceId = randomUUID();
+  const env = { ...(options?.env ?? process.env) };
+  env.PC_FROZEN_VALIDATOR_PHASE = "attach";
+  env.PC_FROZEN_VALIDATOR_GIT_ALLOCATION = String(allocation);
+  env.PC_FROZEN_VALIDATOR_GIT_OBSERVED_BASE = String(ledger.spent);
+  env.PC_FROZEN_VALIDATOR_INSTANCE_ID = childInstanceId;
+  env.PC_FROZEN_VALIDATOR_BOOTSTRAP_PID = process.env.PC_FROZEN_VALIDATOR_BOOTSTRAP_PID ?? "";
+  env.PC_FROZEN_VALIDATOR_RECEIPT_NONCE = process.env.PC_FROZEN_VALIDATOR_RECEIPT_NONCE ?? "";
+  env.PC_FROZEN_VALIDATOR_ROLE = context.role;
+  env.PC_FROZEN_VALIDATOR_HOST_SHA = context.hostSha;
+  env.PC_FROZEN_VALIDATOR_MANIFEST_SHA256 = context.manifestSha256;
+  env.PC_FROZEN_VALIDATOR_NODE = context.node;
+  return { options: { ...options, env }, allocation };
+}
+
+function relayFrom(child) {
+  if (child && typeof child.on === "function") child.on("message", forwardUpstream);
+  return child;
 }
 
 function guardedSpawn(file, args, options) {
-  if (!isPinnedWorkerSpawn(file, args)) {
-    refuse("CHILD_FORBIDDEN", `only the pinned Vitest worker may spawn: ${String(file)}`);
+  if (file === "git") {
+    const plan = planGitLaunch({ args, cwd: options?.cwd, reposRoot });
+    admitGit(plan);
+    return RAW.spawn("git", plan.argv, {
+      ...hardenedGitOptions(options, plan.cwd),
+      timeout: context.ceilings.gitCallTimeoutMs,
+      killSignal: "SIGKILL",
+    });
   }
-  return RAW.spawn(file, args, options);
+  if (!isPinnedWorkerInvocation(file, args)) {
+    refuse("CHILD_FORBIDDEN", `only the pinned worker graph may spawn: ${String(file)}`);
+  }
+  const { options: endowed, allocation } = endowWorker(options);
+  try {
+    return relayFrom(RAW.spawn(file, args, endowed));
+  } catch (error) {
+    returnLedgerTransfer(ledger, allocation);
+    throw error;
+  }
+}
+
+function guardedSpawnSync(file, args, options) {
+  if (file === "git") {
+    const plan = planGitLaunch({ args, cwd: options?.cwd, reposRoot });
+    admitGit(plan);
+    return RAW.spawnSync("git", plan.argv, {
+      ...hardenedGitOptions(options, plan.cwd),
+      killSignal: "SIGKILL",
+    });
+  }
+  refuse("CHILD_FORBIDDEN", "only admitted Git may run through spawnSync");
 }
 
 function guardedFork(modulePath, args, options) {
   const execArgv = Array.isArray(options?.execArgv) ? options.execArgv : [];
-  if (modulePath !== PINNED_VITEST && !execArgv.includes(PINNED_PRELOAD)) {
-    refuse("CHILD_FORBIDDEN", `only the pinned Vitest worker may fork: ${String(modulePath)}`);
+  const importValues = [];
+  for (let i = 0; i < execArgv.length; i += 1) {
+    if (execArgv[i] === "--import" && typeof execArgv[i + 1] === "string") importValues.push(execArgv[i + 1]);
   }
-  return RAW.fork(modulePath, args, options);
+  const pinned =
+    importValues.every((value) => value === PINNED_PRELOAD) &&
+    (importValues.includes(PINNED_PRELOAD) ||
+      (typeof modulePath === "string" && modulePath.endsWith(path.join("vitest", "vitest.mjs"))));
+  if (!pinned) refuse("CHILD_FORBIDDEN", `only the pinned worker may fork: ${String(modulePath)}`);
+  const { options: endowed, allocation } = endowWorker(options);
+  try {
+    return relayFrom(RAW.fork(modulePath, args, endowed));
+  } catch (error) {
+    returnLedgerTransfer(ledger, allocation);
+    throw error;
+  }
 }
 
-childProcess.execFileSync = guardedExecFileSync;
+const promisifyCustom = Symbol.for("nodejs.util.promisify.custom");
+guardedExecFile[promisifyCustom] = (file, args, options) =>
+  guardedExecFile(file, args, options);
+
 childProcess.execFile = guardedExecFile;
+childProcess.execFileSync = guardedExecFileSync;
 childProcess.spawn = guardedSpawn;
+childProcess.spawnSync = guardedSpawnSync;
 childProcess.fork = guardedFork;
 childProcess.exec = () => refuse("SHELL_FORBIDDEN", "shell exec is not permitted");
 childProcess.execSync = () => refuse("SHELL_FORBIDDEN", "shell execSync is not permitted");
 syncBuiltinESMExports();
-
-function shutdown(code) {
-  report({ type: "frozen-validator-exit", code });
-}
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-report({
-  type: "frozen-validator-preload",
-  role: context.role,
-  loader: FROZEN_VALIDATOR_LOADER_PATH,
-  gitBase: context.git.budget.count,
-});

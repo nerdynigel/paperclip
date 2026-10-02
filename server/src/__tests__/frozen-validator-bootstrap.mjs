@@ -1,88 +1,83 @@
 /**
- * Frozen validator bootstrap (THE-567 corrected static publication).
+ * Frozen validator bootstrap (THE-567, corrective contract v4).
  *
- * Plain built-in ESM plus the host loader guard. Validates the role/host/
- * manifest/scratch guards BEFORE any write or child spawn, derives the owned
- * role directories, then supervises exactly one Vitest child process with a
- * sanitized environment, shared Git accounting and bounded stdio.
+ * Plain built-in ESM plus the host loader guard. Runs in the `create` phase:
+ * validates, creates the role lifecycle exclusively, writes the role receipt,
+ * then supervises exactly one detached Vitest child with a transfer-ledger
+ * endowment, sanitized environment, bounded stdio and separate exit/close reaping.
  *
- * Proposed static interface; helper scope, Vite/Vitest loading and the full
- * dependency closure are UNPROVED.
+ * STATIC / UNEXECUTED. Detached parent-death containment is UNPROVED.
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
   buildValidatedRoleContext,
+  transferLedger,
   FROZEN_VALIDATOR_FIXED_CEILINGS,
 } from "./frozen-validator-loader.mjs";
 
-const BOOTSTRAP_FLAGS = new Set(["--role", "--host-sha", "--manifest-sha256", "--node"]);
+const ARG_FLAGS = new Set(["--role", "--host-sha", "--manifest-sha256", "--node"]);
+
+function failClosed(code, message, exitCode = 2) {
+  process.stderr.write(`${code}: ${message}\n`);
+  process.exit(exitCode);
+}
 
 function parseArgs(argv) {
   const parsed = {};
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
-    if (!BOOTSTRAP_FLAGS.has(flag) || typeof value !== "string" || value.startsWith("--")) {
-      throw new Error(`BOOTSTRAP_ARGS: unexpected argument ${String(flag)}`);
+    if (!ARG_FLAGS.has(flag) || typeof value !== "string" || value.startsWith("--")) {
+      failClosed("BOOTSTRAP_ARGS", `unexpected argument ${String(flag)}`);
     }
     parsed[flag.slice(2)] = value;
   }
   for (const required of ["role", "host-sha", "manifest-sha256", "node"]) {
-    if (!parsed[required]) throw new Error(`BOOTSTRAP_ARGS: missing --${required}`);
+    if (!parsed[required]) failClosed("BOOTSTRAP_ARGS", `missing --${required}`);
   }
-  if (!path.isAbsolute(parsed.node)) throw new Error("BOOTSTRAP_ARGS: --node must be absolute");
+  if (!path.isAbsolute(parsed.node)) failClosed("BOOTSTRAP_ARGS", "--node must be absolute");
   return parsed;
 }
 
 const args = parseArgs(process.argv.slice(2));
+const nonce = randomUUID();
+
+process.env.PC_FROZEN_VALIDATOR_PHASE = "create";
+process.env.PC_FROZEN_VALIDATOR_ROLE = args.role;
+process.env.PC_FROZEN_VALIDATOR_HOST_SHA = args["host-sha"];
+process.env.PC_FROZEN_VALIDATOR_MANIFEST_SHA256 = args["manifest-sha256"];
+process.env.PC_FROZEN_VALIDATOR_NODE = args.node;
+process.env.PC_FROZEN_VALIDATOR_RECEIPT_NONCE = nonce;
+process.env.PC_FROZEN_VALIDATOR_BOOTSTRAP_PID = String(process.pid);
+
+if (args.node !== process.execPath) {
+  failClosed("NODE_MISMATCH", "--node does not match the executing Node binary");
+}
 
 const context = buildValidatedRoleContext({
+  phase: "create",
   reporter: (accounting) => {
-    // Guard reads are the bootstrap's own; the worker continues from this total.
     if (accounting.gitCalls > FROZEN_VALIDATOR_FIXED_CEILINGS.gitCallsPerRole) {
-      failClosed("GIT_BUDGET", "bootstrap guard exceeded the aggregate Git ceiling");
+      failClosed("GIT_BUDGET", "create-phase guards exceeded the aggregate Git ceiling");
     }
   },
 });
-
-function failClosed(code, message) {
-  process.stderr.write(`${code}: ${message}\n`);
-  process.exit(2);
-}
-
-if (args.role !== context.role) {
-  failClosed("ROLE_MISMATCH", "--role does not match the validated role");
-}
-if (args.node !== context.node) {
-  failClosed("NODE_MISMATCH", "--node does not match the executing Node binary");
-}
-if (args["host-sha"] !== (process.env.PC_FROZEN_VALIDATOR_HOST_SHA ?? "").trim()) {
-  failClosed("HOST_SHA_MISMATCH", "--host-sha does not match the validated host pin");
-}
-if (args["manifest-sha256"] !== (process.env.PC_FROZEN_VALIDATOR_MANIFEST_SHA256 ?? "").trim()) {
-  failClosed("MANIFEST_SHA_MISMATCH", "--manifest-sha256 does not match the validated manifest pin");
-}
-
-fs.mkdirSync(context.dirs.repos, { recursive: true });
-fs.mkdirSync(context.dirs.cache, { recursive: true });
-fs.mkdirSync(context.dirs.output, { recursive: true });
-fs.mkdirSync(context.dirs.home, { recursive: true });
-const childTmp = path.join(context.dirs.roleDir, "tmp");
-fs.mkdirSync(childTmp, { recursive: true });
 
 const testFile = path.join(context.hostRoot, "server/src/__tests__/frozen-validator-independent.test.ts");
 const preloadFile = path.join(context.hostRoot, "server/src/__tests__/frozen-validator-preload.mjs");
 const configFile = path.join(context.hostRoot, "server/src/__tests__/frozen-validator.vitest.config.mjs");
 const vitestEntry = path.join(context.hostRoot, "node_modules/vitest/vitest.mjs");
-
 for (const required of [testFile, preloadFile, configFile, vitestEntry]) {
-  if (!fs.existsSync(required)) {
-    failClosed("CHILD_INPUT_MISSING", `required child input is missing: ${required}`);
-  }
+  if (!fs.existsSync(required)) failClosed("CHILD_INPUT_MISSING", `required child input is missing: ${required}`);
 }
+
+const childInstanceId = randomUUID();
+const allocation = transferLedger(context.ledger); // Rule B: remaining - 1, keep 1
+const observedBase = context.ledger.spent;
 
 const childEnv = {
   PATH: process.env.PATH ?? "",
@@ -90,28 +85,30 @@ const childEnv = {
   LC_ALL: "C",
   HOME: context.dirs.home,
   PAPERCLIP_HOME: context.dirs.home,
-  TMPDIR: childTmp,
+  TMPDIR: context.dirs.tmp,
   NODE_ENV: "production",
   PAPERCLIP_LOG_LEVEL: "silent",
   PAPERCLIP_RUN_SCRATCH_DIR: context.scratch,
   PC_FROZEN_VALIDATOR_ROLE: context.role,
-  PC_FROZEN_VALIDATOR_HOST_SHA: args["host-sha"],
-  PC_FROZEN_VALIDATOR_MANIFEST_SHA256: args["manifest-sha256"],
-  PC_FROZEN_VALIDATOR_GIT_BASE_COUNT: String(context.git.budget.count),
+  PC_FROZEN_VALIDATOR_HOST_SHA: context.hostSha,
+  PC_FROZEN_VALIDATOR_MANIFEST_SHA256: context.manifestSha256,
+  PC_FROZEN_VALIDATOR_NODE: context.node,
+  PC_FROZEN_VALIDATOR_PHASE: "attach",
+  PC_FROZEN_VALIDATOR_RECEIPT_NONCE: nonce,
+  PC_FROZEN_VALIDATOR_BOOTSTRAP_PID: String(process.pid),
+  PC_FROZEN_VALIDATOR_INSTANCE_ID: childInstanceId,
+  PC_FROZEN_VALIDATOR_GIT_ALLOCATION: String(allocation),
+  PC_FROZEN_VALIDATOR_GIT_OBSERVED_BASE: String(observedBase),
 };
 for (const passthrough of ["PAPERCLIP_RUN_ID", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID"]) {
-  if (typeof process.env[passthrough] === "string") {
-    childEnv[passthrough] = process.env[passthrough];
-  }
+  if (typeof process.env[passthrough] === "string") childEnv[passthrough] = process.env[passthrough];
 }
 
 const childArgs = [
-  "--import",
-  preloadFile,
+  "--import", preloadFile,
   vitestEntry,
   "run",
-  "--config",
-  configFile,
+  "--config", configFile,
   "--pool=forks",
   "--maxWorkers=1",
   "--no-file-parallelism",
@@ -125,15 +122,40 @@ const child = spawn(args.node, childArgs, {
   detached: true,
 });
 
-let gitCount = context.git.budget.count;
+const supervisor = {
+  schema: "paperclip.frozen-validator.supervisor/v1",
+  role: context.role,
+  instanceId: childInstanceId,
+  bootstrapPid: process.pid,
+  childPid: child.pid ?? null,
+  allocation,
+  observedBase,
+  seenReports: 0,
+  gitObservedSpent: observedBase,
+  ipcBackpressure: 0,
+  childExitedAt: null,
+  stdioClosedAt: null,
+  stdioCloseTimedOut: false,
+  reapStartedAt: null,
+  reapAttempts: 0,
+  residualAfterKill: false,
+  groupLiveAfterReap: true,
+  parentDeathContainment: "unproved",
+  terminationReason: null,
+  exitCode: null,
+};
+
 let stdioBytes = 0;
 let overLimit = false;
 let stdoutChunks = [];
 let stderrChunks = [];
+const seenReportKeys = new Set();
+let stdioCloseTimer = null;
 
 function terminate(reason) {
+  if (supervisor.terminationReason) return;
+  supervisor.terminationReason = reason;
   overLimit = true;
-  process.stderr.write(`frozen-validator: terminating child tree (${reason})\n`);
   try {
     process.kill(-child.pid, "SIGKILL");
   } catch {
@@ -158,16 +180,78 @@ child.stdout.on("data", (chunk) => accountStdio(chunk, stdoutChunks));
 child.stderr.on("data", (chunk) => accountStdio(chunk, stderrChunks));
 
 child.on("message", (message) => {
-  if (!message || typeof message !== "object") return;
-  if (message.type === "frozen-validator-git") {
-    if (message.delta > 0) gitCount += message.delta;
-    else if (typeof message.total === "number") gitCount = message.total;
-    if (gitCount > context.ceilings.gitCallsPerRole) terminate("git-ceiling");
+  if (!message || typeof message !== "object" || message.type === "frozen-validator-git") return;
+  if (message.v !== 4 || typeof message.instanceId !== "string" || !Number.isInteger(message.seq)) return;
+  const key = `${message.instanceId}:${message.seq}`;
+  if (seenReportKeys.has(key)) return;
+  seenReportKeys.add(key);
+  supervisor.seenReports += 1;
+  if (Number.isInteger(message.spent) && message.spent > supervisor.gitObservedSpent) {
+    supervisor.gitObservedSpent = message.spent;
   }
+  if (supervisor.gitObservedSpent > context.ceilings.gitCallsPerRole) terminate("git-ceiling");
+});
+
+function reapGroup() {
+  supervisor.reapStartedAt = new Date().toISOString();
+  const pgid = child.pid;
+  const deadline = Date.now() + context.ceilings.reapTimeoutMs;
+  const poll = () => {
+    supervisor.reapAttempts += 1;
+    let live = false;
+    try {
+      process.kill(-pgid, 0);
+      live = true;
+    } catch {
+      live = false;
+    }
+    if (!live) {
+      supervisor.groupLiveAfterReap = false;
+      return;
+    }
+    if (Date.now() >= deadline) {
+      try {
+        process.kill(-pgid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      try {
+        process.kill(-pgid, 0);
+        supervisor.residualAfterKill = true;
+      } catch {
+        supervisor.residualAfterKill = false;
+      }
+      supervisor.groupLiveAfterReap = supervisor.residualAfterKill;
+      return;
+    }
+    setTimeout(poll, context.ceilings.reapPollIntervalMs);
+  };
+  poll();
+}
+
+child.on("exit", (code, signal) => {
+  supervisor.childExitedAt = new Date().toISOString();
+  supervisor.exitCode = typeof code === "number" ? code : null;
+  supervisor.signal = signal ?? null;
+  reapGroup();
+  stdioCloseTimer = setTimeout(() => {
+    supervisor.stdioCloseTimedOut = true;
+    for (const stream of [child.stdout, child.stderr]) {
+      try {
+        stream.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      child.disconnect();
+    } catch {
+      /* ignore */
+    }
+  }, context.ceilings.stdioCloseDeadlineMs);
 });
 
 const deadline = setTimeout(() => terminate("helper-deadline"), context.ceilings.helperMaxDurationMs);
-
 function forwardSignal(signal) {
   try {
     process.kill(-child.pid, signal);
@@ -175,7 +259,7 @@ function forwardSignal(signal) {
     try {
       child.kill(signal);
     } catch {
-      /* already gone */
+      /* ignore */
     }
   }
 }
@@ -184,21 +268,36 @@ process.on("SIGINT", () => forwardSignal("SIGINT"));
 
 const exitCode = await new Promise((resolve) => {
   child.on("error", () => resolve(3));
-  child.on("close", (code) => resolve(typeof code === "number" ? code : 3));
+  child.on("close", (code) => {
+    supervisor.stdioClosedAt = new Date().toISOString();
+    if (stdioCloseTimer) clearTimeout(stdioCloseTimer);
+    resolve(typeof code === "number" ? code : 3);
+  });
 });
 clearTimeout(deadline);
 
-function writeBoundedLog(name, chunks) {
-  const target = path.join(context.dirs.output, name);
-  const body = Buffer.concat(chunks);
-  const bounded = body.length > context.ceilings.roleStdioMaxBytes ? body.subarray(0, context.ceilings.roleStdioMaxBytes) : body;
-  try {
-    fs.writeFileSync(target, bounded);
-  } catch {
-    /* keep cleanup safe; failure must not hide the child outcome */
-  }
+/* Contract E.3: durable evidence before disposable cleanup. */
+function writeEvidence(name, data) {
+  fs.writeFileSync(path.join(context.dirs.output, name), data);
 }
-writeBoundedLog("child-stdout.log", stdoutChunks);
-writeBoundedLog("child-stderr.log", stderrChunks);
+let evidenceFailure = false;
+try {
+  writeEvidence("child-stdout.log", Buffer.concat(stdoutChunks));
+  writeEvidence("child-stderr.log", Buffer.concat(stderrChunks));
+  writeEvidence("supervisor.json", JSON.stringify(supervisor, null, 2));
+} catch {
+  evidenceFailure = true;
+}
 
+let cleanupFailure = false;
+try {
+  const work = path.resolve(context.dirs.work);
+  if (fs.realpathSync(work) !== work) cleanupFailure = true;
+  else fs.rmSync(work, { recursive: true, force: true });
+} catch {
+  cleanupFailure = true;
+}
+
+if (evidenceFailure) process.exit(5);
+if (cleanupFailure) process.exit(6);
 process.exit(overLimit ? 4 : exitCode);

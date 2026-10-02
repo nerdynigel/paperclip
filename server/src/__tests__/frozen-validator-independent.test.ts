@@ -26,7 +26,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  buildValidatedRoleContext,
+  getValidatedRoleContext,
   loadBoundSubject,
 } from "./frozen-validator-loader.mjs";
 
@@ -102,38 +102,15 @@ interface FixtureWorkspaceInput {
 
 type BoundSubject = Awaited<ReturnType<typeof loadBoundSubject>>;
 
-const context = buildValidatedRoleContext();
+const context = getValidatedRoleContext();
 let bound: BoundSubject;
-let fixtureRoot = "";
+const setupGuardDenials: string[] = [];
 
 /* ------------------------------------------------------------------------- */
-/* Strict Git setup (argv templates only; contained under the owned repos)   */
+/* Strict Git setup: exact token arrays only, under the owned repos root.    */
+/* The preload's exact-token policy is the admission point; the fixture never */
+/* joins tokens or builds shell strings.                                      */
 /* ------------------------------------------------------------------------- */
-
-const GIT_ARGV_TEMPLATES: RegExp[] = [
-  /^init$/,
-  /^config user\.(email|name) /,
-  /^add [\w./-]+$/,
-  /^commit -m [\w -]+$/,
-  /^checkout -b [\w./-]+$/,
-  /^reset --hard [0-9a-f]{40}$/,
-  /^rev-parse (HEAD|--show-toplevel|--verify --quiet [\w./^~-]+)$/,
-  /^merge-base --is-ancestor [0-9a-f]{40} [0-9a-f]{40}$/,
-  /^remote add origin (https?:\/\/|git@)[\w./:@-]+$/,
-  /^worktree add -b [\w./-]+ [\w./-]+ HEAD$/,
-];
-
-function assertArgvTemplate(args: string[]) {
-  const joined = args.join(" ");
-  if (!GIT_ARGV_TEMPLATES.some((template) => template.test(joined))) {
-    throw new Error(`fixture git argv is not an approved template: ${joined}`);
-  }
-  for (const arg of args) {
-    if (arg.startsWith("-C") || arg.startsWith("--git-dir") || arg.startsWith("--work-tree")) {
-      throw new Error(`fixture git argv uses a forbidden scope flag: ${arg}`);
-    }
-  }
-}
 
 function assertOwned(cwd: string) {
   const repos = context.dirs.repos;
@@ -145,21 +122,32 @@ function assertOwned(cwd: string) {
 
 async function fixtureGit(cwd: string, args: string[]) {
   assertOwned(cwd);
-  assertArgvTemplate(args);
   await execFile("git", args, { cwd });
 }
 
 async function gitOut(cwd: string, args: string[]) {
   assertOwned(cwd);
-  assertArgvTemplate(args);
   const { stdout } = await execFile("git", args, { cwd });
   return stdout.trim();
 }
 
 async function observe(cwd: string) {
-  const topLevel = await gitOut(cwd, ["rev-parse", "--show-toplevel"]).catch(() => null);
-  const head = await gitOut(cwd, ["rev-parse", "HEAD"]).catch(() => null);
-  return { topLevel, head };
+  const result: Record<string, unknown> = { observed: null, head: null };
+  try {
+    result.observed = await gitOut(cwd, ["rev-parse", "--show-toplevel"]);
+  } catch (error) {
+    setupGuardDenials.push(`observe:toplevel:${asCode(error)}`);
+  }
+  try {
+    result.head = await gitOut(cwd, ["rev-parse", "HEAD"]);
+  } catch (error) {
+    setupGuardDenials.push(`observe:head:${asCode(error)}`);
+  }
+  return result;
+}
+
+function asCode(error: unknown) {
+  return (error as { code?: string } | null)?.code ?? "error";
 }
 
 /* ------------------------------------------------------------------------- */
@@ -169,12 +157,12 @@ async function observe(cwd: string) {
 async function makeRepo(prefix: string, options: { remoteUrl?: string } = {}) {
   const root = await fs.mkdtemp(path.join(context.dirs.repos, `${prefix}-`));
   await fixtureGit(root, ["init"]);
-  await fixtureGit(root, ["config user.email fixture@example.com"]);
-  await fixtureGit(root, ["config user.name Frozen-Fixture"]);
+  await fixtureGit(root, ["config", "user.email", "fixture@example.com"]);
+  await fixtureGit(root, ["config", "user.name", "Frozen-Fixture"]);
   await fs.writeFile(path.join(root, "README.md"), "seed\n", "utf8");
-  await fixtureGit(root, ["add README.md"]);
-  await fixtureGit(root, ["commit -m seed"]);
-  if (options.remoteUrl) await fixtureGit(root, ["remote add origin " + options.remoteUrl]);
+  await fixtureGit(root, ["add", "README.md"]);
+  await fixtureGit(root, ["commit", "-m", "seed"]);
+  if (options.remoteUrl) await fixtureGit(root, ["remote", "add", "origin", options.remoteUrl]);
   const subdirectory = path.join(root, "server");
   await fs.mkdir(subdirectory, { recursive: true });
   return { root, subdirectory };
@@ -184,10 +172,10 @@ async function makeLinkedWorktree(prefix: string, options: { branch?: string; re
   const main = await makeRepo(`${prefix}-main`, { remoteUrl: options.remoteUrl });
   const worktreeParent = await fs.mkdtemp(path.join(context.dirs.repos, `${prefix}-wt-`));
   const worktreePath = path.join(worktreeParent, "workspace");
-  await fixtureGit(main.root, [`worktree add -b ${options.branch ?? "fixture-linked"} ${worktreePath} HEAD`]);
+  await fixtureGit(main.root, ["worktree", "add", "-b", options.branch ?? "fixture-linked", worktreePath, "HEAD"]);
   const subdirectory = path.join(worktreePath, "server");
   await fs.mkdir(subdirectory, { recursive: true });
-  const headSha = await gitOut(worktreePath, ["rev-parse HEAD"]);
+  const headSha = await gitOut(worktreePath, ["rev-parse", "HEAD"]);
   return { mainRoot: main.root, worktreePath, subdirectory, headSha };
 }
 
@@ -196,11 +184,11 @@ async function makeNestedRepo(prefix: string) {
   const nestedRoot = path.join(outer.subdirectory, "nested");
   await fs.mkdir(nestedRoot, { recursive: true });
   await fixtureGit(nestedRoot, ["init"]);
-  await fixtureGit(nestedRoot, ["config user.email fixture@example.com"]);
-  await fixtureGit(nestedRoot, ["config user.name Frozen-Fixture"]);
+  await fixtureGit(nestedRoot, ["config", "user.email", "fixture@example.com"]);
+  await fixtureGit(nestedRoot, ["config", "user.name", "Frozen-Fixture"]);
   await fs.writeFile(path.join(nestedRoot, "README.md"), "nested\n", "utf8");
-  await fixtureGit(nestedRoot, ["add README.md"]);
-  await fixtureGit(nestedRoot, ["commit -m nested"]);
+  await fixtureGit(nestedRoot, ["add", "README.md"]);
+  await fixtureGit(nestedRoot, ["commit", "-m", "nested"]);
   const nestedServer = path.join(nestedRoot, "server");
   await fs.mkdir(nestedServer, { recursive: true });
   return { outerRoot: outer.root, nestedRoot, nestedServer };
@@ -208,16 +196,16 @@ async function makeNestedRepo(prefix: string) {
 
 async function makeDivergentRepo(prefix: string) {
   const repo = await makeRepo(prefix);
-  const baseSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+  const baseSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
   await fs.writeFile(path.join(repo.root, "README.md"), "ahead\n", "utf8");
-  await fixtureGit(repo.root, ["add README.md"]);
-  await fixtureGit(repo.root, ["commit -m ahead"]);
-  const aheadSha = await gitOut(repo.root, ["rev-parse HEAD"]);
-  await fixtureGit(repo.root, [`reset --hard ${baseSha}`]);
-  await fixtureGit(repo.root, ["checkout -b divergent"]);
+  await fixtureGit(repo.root, ["add", "README.md"]);
+  await fixtureGit(repo.root, ["commit", "-m", "ahead"]);
+  const aheadSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
+  await fixtureGit(repo.root, ["reset", "--hard", baseSha]);
+  await fixtureGit(repo.root, ["checkout", "-b", "divergent"]);
   await fs.writeFile(path.join(repo.root, "README.md"), "divergent\n", "utf8");
-  await fixtureGit(repo.root, ["add README.md"]);
-  await fixtureGit(repo.root, ["commit -m divergent"]);
+  await fixtureGit(repo.root, ["add", "README.md"]);
+  await fixtureGit(repo.root, ["commit", "-m", "divergent"]);
   return { root: repo.root, subdirectory: repo.subdirectory, baseSha, aheadSha };
 }
 
@@ -377,7 +365,7 @@ async function classify(input: FixtureWorkspaceInput): Promise<Verdict> {
       classification: "refuse",
       reason: validation?.reason ?? null,
       branchReasonCode: validation?.managedGitWorktreeBranch?.reasonCode ?? null,
-      message: shaped?.message ?? String(error),
+      message: redactString(shaped?.message ?? String(error)),
     };
   }
 }
@@ -408,6 +396,10 @@ interface CaseRecord {
   observed: Record<string, unknown>;
   expected: RoleExpectation;
   actual: Verdict;
+  failureKind?: FailureKind;
+  expectedView?: Record<string, unknown>;
+  actualView?: Record<string, unknown>;
+  guardDenials?: string[];
   predictedCandidateVerdict?: Classification;
   predictedBaseVerdict?: Classification;
   verdict: "pass" | "fail" | "setup_error";
@@ -415,13 +407,79 @@ interface CaseRecord {
   error?: string;
 }
 
+type FailureKind =
+  | "classification_mismatch"
+  | "unexpected_wrapper_reason"
+  | "missing_wrapper_reason"
+  | "wrapper_reason_mismatch"
+  | "branch_reason_mismatch"
+  | null;
+
+/**
+ * Contract F: one matcher for both the recorded verdict and the assertion.
+ * Wrapper reason is always explicit (accept requires null; refuse requires the
+ * explicit reason). branchReasonCode is compared only when the expectation owns
+ * the property.
+ */
+function matchVerdict(actual: Verdict, expected: RoleExpectation) {
+  let failureKind: FailureKind = null;
+  if (actual.classification !== expected.classification) {
+    failureKind = "classification_mismatch";
+  } else if (expected.classification === "accept") {
+    if (actual.reason !== null) failureKind = "unexpected_wrapper_reason";
+  } else if (actual.reason === null) {
+    failureKind = "missing_wrapper_reason";
+  } else if (actual.reason !== expected.reason) {
+    failureKind = "wrapper_reason_mismatch";
+  }
+  const ownsBranch = Object.prototype.hasOwnProperty.call(expected, "branchReasonCode");
+  if (failureKind === null && ownsBranch && actual.branchReasonCode !== (expected.branchReasonCode ?? null)) {
+    failureKind = "branch_reason_mismatch";
+  }
+  return {
+    passed: failureKind === null,
+    failureKind,
+    expectedView: {
+      classification: expected.classification,
+      reason: expected.reason ?? null,
+      branchReasonCode: ownsBranch ? expected.branchReasonCode ?? null : "<omitted>",
+    },
+    actualView: {
+      classification: actual.classification,
+      reason: actual.reason,
+      branchReasonCode: actual.branchReasonCode,
+    },
+  };
+}
+
+function redactString(value: string): string {
+  let output = value;
+  const roots = [context.scratch, context.hostRoot, ...Object.values(context.manifest.roles ?? {}).map((role) => role.cwd)];
+  for (const root of roots) {
+    if (typeof root === "string" && root.length > 0) output = output.split(root).join("<redacted>");
+  }
+  return output;
+}
+
+function redact(value: unknown): unknown {
+  if (typeof value === "string") return redactString(value);
+  if (Array.isArray(value)) return value.map(redact);
+  if (value && typeof value === "object") {
+    const output: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) output[key] = redact(entry);
+    return output;
+  }
+  return value;
+}
+
 const caseRecords: CaseRecord[] = [];
 
 function rel(value: string | null | undefined) {
   if (typeof value !== "string") return value ?? null;
-  const scratch = context.scratch;
-  const r = path.relative(scratch, value);
-  return r.startsWith("..") ? value : r;
+  const relative = path.relative(context.scratch, value);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+    ? relative
+    : "<outside-scratch>";
 }
 
 function summarizeInput(input: FixtureWorkspaceInput): Record<string, unknown> {
@@ -444,11 +502,19 @@ function summarizeInput(input: FixtureWorkspaceInput): Record<string, unknown> {
 }
 
 function pushRecord(record: CaseRecord) {
-  const row = JSON.stringify(record);
+  const safe: CaseRecord = {
+    ...record,
+    description: redactString(record.description),
+    input: redact(record.input) as Record<string, unknown>,
+    observed: redact(record.observed) as Record<string, unknown>,
+    error: record.error ? redactString(record.error) : record.error,
+    guardDenials: (record.guardDenials ?? []).map(redactString),
+  };
+  const row = JSON.stringify(safe);
   if (Buffer.byteLength(row) > context.ceilings.caseLogRowMaxBytes) {
     throw new Error(`case log row exceeds ${context.ceilings.caseLogRowMaxBytes} bytes: ${record.id}`);
   }
-  caseRecords.push(record);
+  caseRecords.push(safe);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -490,7 +556,7 @@ defineCase({
   },
   build: async () => {
     const repo = await makeRepo("desc-ordinary");
-    const headSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     return buildInput({
       effectiveCwd: repo.subdirectory,
       persistedCwd: repo.subdirectory,
@@ -525,7 +591,7 @@ defineCase({
   expected: { base: { classification: "accept" }, candidate: { classification: "accept" } },
   build: async () => {
     const repo = await makeRepo("root-ordinary");
-    const headSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     return buildInput({
       effectiveCwd: repo.root,
       persistedCwd: repo.root,
@@ -665,11 +731,11 @@ defineCase({
   description: "Descendant cwd with providerRef/persisted=cwd refused; records the underlying branch wrapper reasonCode.",
   expected: {
     base: { classification: "refuse", reason: "missing_git_metadata" },
-    candidate: { classification: "refuse", reason: "git_worktree_branch_mismatch" },
+    candidate: { classification: "refuse", reason: "git_worktree_branch_mismatch", branchReasonCode: "not_registered" },
   },
   build: async () => {
     const worktree = await makeLinkedWorktree("branch-descendant", { branch: "THE-567-recorded" });
-    await fixtureGit(worktree.subdirectory, ["checkout -b THE-567-actual"]);
+    await fixtureGit(worktree.subdirectory, ["checkout", "-b", "THE-567-actual"]);
     return buildInput({
       effectiveCwd: worktree.subdirectory,
       persistedCwd: worktree.subdirectory,
@@ -695,7 +761,7 @@ defineCase({
   },
   build: async () => {
     const worktree = await makeLinkedWorktree("branch-drift", { branch: "THE-567-recorded" });
-    await fixtureGit(worktree.worktreePath, ["checkout -b THE-567-actual"]);
+    await fixtureGit(worktree.worktreePath, ["checkout", "-b", "THE-567-actual"]);
     return buildInput({
       effectiveCwd: worktree.worktreePath,
       persistedCwd: worktree.worktreePath,
@@ -743,7 +809,7 @@ defineCase({
   },
   build: async () => {
     const repo = await makeRepo("origin-mismatch", { remoteUrl: "https://github.com/example/actual.git" });
-    const headSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     return buildInput({
       effectiveCwd: repo.subdirectory,
       persistedCwd: repo.subdirectory,
@@ -767,7 +833,7 @@ defineCase({
   gap: "candidate skips the origin check when origin is absent; predicted red.",
   build: async () => {
     const repo = await makeRepo("origin-missing");
-    const headSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     return buildInput({
       effectiveCwd: repo.subdirectory,
       persistedCwd: repo.subdirectory,
@@ -789,7 +855,7 @@ defineCase({
   },
   build: async () => {
     const repo = await makeRepo("origin-match", { remoteUrl: "git@github.com:Example/Repo.git" });
-    const headSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     return buildInput({
       effectiveCwd: repo.subdirectory,
       persistedCwd: repo.subdirectory,
@@ -880,7 +946,7 @@ defineCase({
     const outer = await makeRepo("symlink-inroot");
     const link = path.join(outer.root, "link");
     await fs.symlink(outer.subdirectory, link, "dir");
-    const headSha = await gitOut(outer.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(outer.root, ["rev-parse", "HEAD"]);
     return buildInput({
       effectiveCwd: link,
       persistedCwd: link,
@@ -945,10 +1011,10 @@ defineCase({
   gap: "candidate accepts an ancestor pin as a branch base; predicted red for the exact-pin contract.",
   build: async () => {
     const repo = await makeRepo("pin-ancestor");
-    const firstSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const firstSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     await fs.writeFile(path.join(repo.root, "README.md"), "second\n", "utf8");
-    await fixtureGit(repo.root, ["add README.md"]);
-    await fixtureGit(repo.root, ["commit -m second"]);
+    await fixtureGit(repo.root, ["add", "README.md"]);
+    await fixtureGit(repo.root, ["commit", "-m", "second"]);
     return buildInput({
       effectiveCwd: repo.subdirectory,
       persistedCwd: repo.subdirectory,
@@ -969,7 +1035,7 @@ defineCase({
   },
   build: async () => {
     const repo = await makeRepo("pin-equal");
-    const headSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     return buildInput({
       effectiveCwd: repo.subdirectory,
       persistedCwd: repo.subdirectory,
@@ -990,12 +1056,12 @@ defineCase({
   },
   build: async () => {
     const repo = await makeRepo("pin-behind");
-    const firstSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const firstSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     await fs.writeFile(path.join(repo.root, "README.md"), "second\n", "utf8");
-    await fixtureGit(repo.root, ["add README.md"]);
-    await fixtureGit(repo.root, ["commit -m second"]);
-    const secondSha = await gitOut(repo.root, ["rev-parse HEAD"]);
-    await fixtureGit(repo.root, [`reset --hard ${firstSha}`]);
+    await fixtureGit(repo.root, ["add", "README.md"]);
+    await fixtureGit(repo.root, ["commit", "-m", "second"]);
+    const secondSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
+    await fixtureGit(repo.root, ["reset", "--hard", firstSha]);
     return buildInput({
       effectiveCwd: repo.subdirectory,
       persistedCwd: repo.subdirectory,
@@ -1019,12 +1085,12 @@ defineCase({
   gap: "direct .git metadata short-circuits pin checks on both roles; predicted red.",
   build: async () => {
     const repo = await makeRepo("direct-wrong-pin");
-    const headSha = await gitOut(repo.root, ["rev-parse HEAD"]);
+    const headSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
     await fs.writeFile(path.join(repo.root, "README.md"), "second\n", "utf8");
-    await fixtureGit(repo.root, ["add README.md"]);
-    await fixtureGit(repo.root, ["commit -m second"]);
-    const wrongPinSha = await gitOut(repo.root, ["rev-parse HEAD"]);
-    await fixtureGit(repo.root, [`reset --hard ${headSha}`]);
+    await fixtureGit(repo.root, ["add", "README.md"]);
+    await fixtureGit(repo.root, ["commit", "-m", "second"]);
+    const wrongPinSha = await gitOut(repo.root, ["rev-parse", "HEAD"]);
+    await fixtureGit(repo.root, ["reset", "--hard", headSha]);
     return buildInput({
       effectiveCwd: repo.root,
       persistedCwd: repo.root,
@@ -1098,11 +1164,22 @@ defineCase({
 /* Suite                                                                    */
 /* ------------------------------------------------------------------------- */
 
+for (const fixtureCase of CASES) {
+  for (const role of ["base", "candidate"] as const) {
+    const expectation = fixtureCase.expected[role];
+    if (expectation.classification === "refuse" && typeof expectation.reason !== "string") {
+      throw new Error(`fixture authoring invariant: refuse row ${fixtureCase.id}:${role} lacks an explicit reason`);
+    }
+    if (expectation.classification === "accept" && expectation.reason !== undefined) {
+      throw new Error(`fixture authoring invariant: accept row ${fixtureCase.id}:${role} must omit reason`);
+    }
+  }
+}
+
 describe("frozen-validator-independent", () => {
   beforeAll(async () => {
-    fixtureRoot = context.dirs.roleDir;
     bound = await loadBoundSubject(context);
-  }, 60000);
+  }, context.ceilings.hookTimeoutMs);
 
   afterAll(async () => {
     const logPath = path.join(context.dirs.output, "cases.jsonl");
@@ -1110,11 +1187,14 @@ describe("frozen-validator-independent", () => {
     if (Buffer.byteLength(payload) > context.ceilings.caseLogMaxBytes) {
       throw new Error("case log exceeds the 4 MiB ceiling");
     }
+    if (caseRecords.length !== CASES.length) {
+      throw new Error(`case log is incomplete: ${caseRecords.length}/${CASES.length}`);
+    }
     await fs.writeFile(logPath, payload, "utf8");
     if (bound?.close) {
       await bound.close().catch(() => {});
     }
-  }, 60000);
+  }, context.ceilings.teardownTimeoutMs);
 
   for (const fixtureCase of CASES) {
     it(
@@ -1128,7 +1208,7 @@ describe("frozen-validator-independent", () => {
           input = await fixtureCase.build();
           const effective = input.executionWorkspace.cwd;
           if (typeof effective === "string" && effective.length > 0) {
-            observed = await observe(effective).catch(() => ({}));
+            observed = await observe(effective);
           }
         } catch (error) {
           pushRecord({
@@ -1140,6 +1220,7 @@ describe("frozen-validator-independent", () => {
             observed,
             expected,
             actual: { classification: "refuse", reason: null, branchReasonCode: null, message: null },
+            guardDenials: [...setupGuardDenials],
             predictedCandidateVerdict: fixtureCase.predictedCandidateVerdict,
             predictedBaseVerdict: fixtureCase.predictedBaseVerdict,
             verdict: "setup_error",
@@ -1150,10 +1231,7 @@ describe("frozen-validator-independent", () => {
         }
 
         const actual = await classify(input);
-        const passed =
-          actual.classification === expected.classification &&
-          (expected.reason === undefined || actual.reason === expected.reason) &&
-          (expected.branchReasonCode === undefined || actual.branchReasonCode === expected.branchReasonCode);
+        const match = matchVerdict(actual, expected);
 
         pushRecord({
           role,
@@ -1164,25 +1242,19 @@ describe("frozen-validator-independent", () => {
           observed,
           expected,
           actual,
+          failureKind: match.failureKind,
+          expectedView: match.expectedView,
+          actualView: match.actualView,
+          guardDenials: [...setupGuardDenials],
           predictedCandidateVerdict: fixtureCase.predictedCandidateVerdict,
           predictedBaseVerdict: fixtureCase.predictedBaseVerdict,
-          verdict: passed ? "pass" : "fail",
+          verdict: match.passed ? "pass" : "fail",
           gap: fixtureCase.gap,
         });
 
-        expect({
-          classification: actual.classification,
-          reason: actual.reason,
-          branchReasonCode: actual.branchReasonCode,
-        }).toEqual({
-          classification: expected.classification,
-          reason: expected.reason ?? null,
-          branchReasonCode: expected.branchReasonCode ?? null,
-        });
+        expect(match.passed, `failureKind=${match.failureKind ?? "none"}`).toBe(true);
       },
-      60000,
+      context.ceilings.testTimeoutMs,
     );
   }
 });
-
-void fixtureRoot;

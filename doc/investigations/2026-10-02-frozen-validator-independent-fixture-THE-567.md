@@ -1,116 +1,94 @@
-# Frozen independent validator fixture — corrected static publication (THE-567)
+# Frozen independent validator fixture — corrective v4 static publication (THE-567)
 
-Static authoring/publication only. This document and the host modules described
-below are a **proposal**. They prove no executed fixture correctness and no
-candidate acceptance. Independent certification of these static bytes is
-[THE-564](/THE/issues/THE-564); runtime QA is [THE-560](/THE/issues/THE-560).
+Static authoring/publication only. This document and the host modules are a
+**proposal**. They prove no executed fixture correctness and no candidate
+acceptance. Independent certification is [THE-564](/THE/issues/THE-564); runtime QA is
+[THE-560](/THE/issues/THE-560).
 
-This revision supersedes the prior publication at
-`ce5d101809f7d9546eebe0ae2a6a04b532b807b1` (fixture blob
-`e30a10977d60c50340b1935dcb313f8421151da1`, evidence blob
-`f27a4401f483784a8a093b16e18dd24bd0e250cc`). It implements the corrections in
-fixture-review revision `7f08a0ca-1101-4e43-ab0d-0a24154d3e6b` against the
-Reliability interface [isolated-import-design](/THE/issues/THE-565#document-isolated-import-design)
-revision `0f054523-3cef-4caa-b840-4d1e36ead7a7`.
+This revision implements the accepted corrective contract v4
+([corrective-contract-v1](/THE/issues/THE-571#document-corrective-contract-v1),
+revision `7bfcbc18-766d-4691-a0c5-79d231f3dcdb`, management-accepted
+[chief-contract-review-v4](/THE/issues/THE-571#document-chief-contract-review-v4))
+against the V2 review plus mandatory clarification
+([review-input-v2](/THE/issues/THE-567#document-review-input-v2), revisions
+`4cdeb6fb-a5ab-438a-ade6-a83453cb78dd` and `de73ebbf-5e54-46dc-a803-607bb735f701`).
+It supersedes `ee8f5711746976d13ff6e5d600acae02bc607440` / M
+`c94a2bd04571d151c59ffaf36cdbd090b339a6f8fead03420d353ee6efba363d`.
 
-## Three independent identities
+## Contracts implemented
 
-Prefix `P=/home/nigel/projects/homelab/.paperclip-source-pins/2026.916.1`.
+- **A — create/attach lifecycle + source pins.** `getValidatedRoleContext()` is a
+  per-process memo; `buildValidatedRoleContext()` runs once. Bootstrap is `create`
+  (exclusive `mkdir`, atomic `role-receipt.json`); preload/fixture are `attach`
+  (receipt must match role/H/F/M/roleCwd/revision/workspaceId/scratch/UID, nonce, and
+  a live bootstrap ancestor PID). Guard (`A.2`) validates canonical role cwd,
+  `rev-parse HEAD`, `status --porcelain --untracked-files=no`, per-file blob+SHA256,
+  H/C/B + scratch/tmp disjointness, and Node identity before any write/Vite/import.
+  `server/src/services/workspace-runtime.ts` (blob `e96f793bacc0ac64643b25ea09e80171d7e6b1a1`
+  on both roles) is now in both role file maps. Layout is
+  `roleDir/work/{repos,cache,home,tmp}` (disposable) and `roleDir/evidence` (durable).
+- **B — exact token policy.** `matchGitTemplate`/`planGitLaunch` match element-wise
+  against typed read/setup tables (no joined strings, no joined regex). Forbidden
+  scope flags are impossible by construction. Setup/subject Git cwd is canonical
+  under `work/repos`; `worktree add` targets are validated inside it.
+- **C — compatible child surface.** `normalize -> admit -> launch`; refusal returns
+  a rejected Promise with no `.child`/`.kill` and no spawn; success attaches both to
+  the real `ChildProcess`; `util.promisify.custom` yields `{stdout, stderr}`;
+  `execFileSync`/`spawn`/`spawnSync`/`fork` shapes preserved; `exec`/`execSync` refused.
+- **D — permanent-grant ledger.** `remaining/spent` with Rule A launch debit, Rule B
+  `A_child = remaining - 1` transfer before spawn (endowment via
+  `PC_FROZEN_VALIDATOR_GIT_ALLOCATION`), sync-spawn-failure return, async-error and
+  terminal retire-zero. Bootstrap P0 -> Vitest main -> worker monotonic accounting
+  with `(instanceId, seq)` dedupe and `cp.on("message")` relays; no `process.on("message")`
+  report path.
+- **E — closure/supervision/evidence.** Vitest-closure canonical Vite 8.2.2
+  resolution (rejects Vite 6.4.3, root-link, ancestor, global, non-`.pnpm` realpaths);
+  closure-audit plugin writing `module-audit.jsonl`; `ssr.noExternal: true`; separate
+  child `exit` vs stdio `close` with 2000 ms deadline; group reap from `exit`;
+  durable `evidence/` written before `work` cleanup; log-write failure exits 5,
+  cleanup failure exits 6; `supervisor.json.parentDeathContainment = "unproved"`.
+- **F — matcher/time/redaction.** One `matchVerdict` drives both the recorded row and
+  the assertion (accept requires null wrapper reason; refuse requires the explicit
+  reason; omitted `branchReasonCode` is un-compared). Case 13 records
+  `not_registered`; case 14 records `branch_mismatch`. No `60000` literals; recursive
+  path redaction; `observe()` guard denials recorded; case-log completeness checked.
 
-| Role | `projectWorkspaceId` | cwd | Required HEAD |
-| --- | --- | --- | --- |
-| host H | `81f2e6d8-cbd7-4ee9-9fb3-d18f6c6587ec` | `P/validator-fixture-authoring` | corrected publication F (unknown until commit) |
-| candidate C | `ce40ac7f-561a-46f2-9062-9cf298522cc3` | `P/validator-frozen-verify` | `29bf67512aabd7b461a30e546c195e28c37f219e` |
-| base B | `068e96a3-13b3-45ef-b06f-be01f4c33487` | `P/validator-frozen-base` | `871532c335bb8c0f501a200201f4e4ac1fc63fb0` |
-
-C and B are frozen and immutable. The fixture must not test H as if it were C.
-No overlay/copy into C/B, no NODE_PATH bridge, no installed-source borrowing.
-
-## Host files added/corrected (all in H)
+## Host files (current bytes)
 
 | File | Git blob | SHA256 |
 | --- | --- | --- |
-| `server/src/__tests__/frozen-validator-loader.mjs` | `c880165dae72dea4a131ee7db9f896db33aaa7ac` | `2d964fe76f3b3d4e2b8dcdb01ae72d650e2037d2422b925efdddfaee39593d45` |
-| `server/src/__tests__/frozen-validator-bootstrap.mjs` | `2624a1516f46b63a484d64cdf6f7887340481f2b` | `5c1d6e8ca6687272f10e981a7d6c10d6e76f2aaea90396f5428bf34d536f9de2` |
-| `server/src/__tests__/frozen-validator-preload.mjs` | `422f2ed719d224f13236e453b6eb1816d8d78ba9` | `2c77a8fac2726c834712048263d9636f9f2889e8d182579bbd0f6d750423649f` |
-| `server/src/__tests__/frozen-validator.vitest.config.mjs` | `4135df57bdd73227c2c78fc0928c1682238ee0de` | `4254d9dd9b007d966406fb43d8f66540d63c7ec646085c484293930e4fbdbeda` |
-| `server/src/__tests__/frozen-validator-independent.test.ts` | `57dca01a29301de981feaa42ffc2c6cb2437f0a7` | `b6f695779ca4ee1fbba9a7ab340152618ff52d9f2b780df05f2a6d984c872d8b` |
-| `server/src/__tests__/frozen-validator.manifest.json` | `0819a11ad73605b289aba483b99844146d4adf9a` | `c94a2bd04571d151c59ffaf36cdbd090b339a6f8fead03420d353ee6efba363d` |
+| `frozen-validator-loader.mjs` | `6a8bf56b5a6ac7e170b40f9505b794f8237fc4b7` | `d6ffad1d4957ec145b6846228f7bc769c1e33ff8a32c88ac008dc60cbfa011f9` |
+| `frozen-validator-bootstrap.mjs` | `297c2fdf5015bab6fe4841f882a2ff7053ec4501` | `bbeee82fa8c72f248d7e3a54e8a60038b8f0f46d9cbaa9f2be320791744a792f` |
+| `frozen-validator-preload.mjs` | `5b8efd3f0a5006199112bec871e84e9a7a9ce28b` | `95205382b5240426a73d3f0c59eb094b6fabae5ed7ed23ad3fb792296077f668` |
+| `frozen-validator.vitest.config.mjs` | `6e1eca745a15598ef96726fd106bd9dfa09c9135` | `289c194a40b2b8dfce9b31e32c1f7afd477de543119a6809ed9f84f96905dcbe` |
+| `frozen-validator-independent.test.ts` | `d1613c555d09e57115bf2363d123b14f5886da29` | `b89c4034ee8be5350df4287fb4e9362071cb6f04092be1102e25a51ef9417a02` |
+| `frozen-validator.manifest.json` | (M source) | `2670f9aac1823f3c69245e0f10de3977530e220633b4cb9aa5c1daee07520a4e` |
 
-The manifest does not hash itself recursively and does not claim its own commit.
-Verification pins it externally as M and pins the host commit as F.
+## Toolchain closure (installed, not committed)
 
-## Role/closure bindings in the manifest
-
-Candidate and base each list `workspaceId`, `cwd`, `revision`, and per-file
-`blob`+`sha256` for `server/src/services/heartbeat.ts`, `server/src/home-paths.ts`,
-`server/package.json`, `package.json`, `pnpm-lock.yaml`, `vitest.config.ts`,
-`server/vitest.config.ts`, and `packages/paperclip-runner/src/index.ts`. Heartbeat:
-C `47586831…`/`cbdfeedb…`, B `76293aca…`/`c668a1e6…`. Home-paths is shared:
-`4ec29915…`/`1b36cc65…`. Pinned toolchain: Node 24.21.0, pnpm 9.15.4, Vitest
-4.1.11, Vite 8.2.2.
-
-## Guard order (before any mkdir/mkdtemp or product/Vitest/Vite import)
-
-1. Role is exactly `candidate` or `base`. Fixed env `PC_FROZEN_VALIDATOR_ROLE`,
-   `PC_FROZEN_VALIDATOR_HOST_SHA`, `PC_FROZEN_VALIDATOR_MANIFEST_SHA256` must
-   equal certified inputs. No arbitrary ROOT/CASE_LOG/scratch/env-ceiling override.
-2. H top-level equals the containing host, H HEAD equals F, manifest SHA256 equals
-   M, and every pinned host file matches its Git blob and SHA256 (checked via the
-   bounded counted Git read path).
-3. Nonempty absolute injected `PAPERCLIP_RUN_SCRATCH_DIR` and `TMPDIR`: canonical
-   existing real directories, owned by the executing UID, not symlink aliases, not
-   inside an enclosing Git repository, and disjoint from H/C/B in both directions.
-4. Owned role dirs `scratch/frozen-validator/<role>/{repos,cache,output,home}`;
-   case log fixed at `output/cases.jsonl`. Unknown role or empty scratch refuses.
-5. Refuse foreign `NODE_PATH`/`NODE_OPTIONS`, observability endpoints and DSNs.
-6. Only then create owned role directories, and only then load the subject.
-
-The worker preload repeats guards 1–5 in the fork before any product load.
-The subject is loaded via the host loader's fresh Vite SSR instance
-(`configFile=false`, `envFile=false`, `appType=custom`, `middlewareMode=true`,
-`hmr=false`, `ws=false`, `watch=null`, owned `cacheDir`), with the exact
-`/^@paperclipai\/paperclip-runner$/` alias, an own-built `/live` alias,
-`ssr.noExternal=/^@paperclipai\//`, and a closure-audit plugin that refuses
-host/ancestor module targets. `ssrLoadModule` is called only for the absolute
-selected-subject `server/src/services/heartbeat.ts` and `server/src/home-paths.ts`
-with `{fixStacktrace:false}`; the server closes in `finally`. The host's own
-heartbeat is never imported.
-
-## Corrections applied
-
-1. No top-level product import; loader-bound subject after guards. `describe.skip`
-   fallback removed.
-2. Distinct H/C/B identity; no host=subject HEAD, overlay or borrowing; separate
-   fully expanded candidate/base templates below.
-3. Canonical injected scratch validation before any mutation or load; empty refuses.
-4. Fixed contained output; exact Git argv templates and forbidden scope flags;
-   setup cwd must stay under the owned repos root.
-5. Kept the descendant refusal case; added a genuine linked-root branch drift case
-   (`providerRef=persisted=effective=root`) asserting the wrapper reason plus the
-   underlying `branch_mismatch` reasonCode, recorded in the case log.
-6. Root A/B, nested and escaping-symlink rows omit the pin and use neutral remotes;
-   they record observed top-level/HEAD. Pin security tests stay separate.
-7. Fixed aggregate Git ceiling 600 including guard/setup/subject reads, 15000 ms
-   and 1 MiB per call, role stdio 8 MiB, case log 4 MiB, row 64 KiB, supervised
-   child tree with IPC Git accounting and hermetic Git env. No env overrides.
+- Node `/home/nigel/.nvm/versions/node/v24.21.0/bin/node`, v24.21.0, SHA256
+  `7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c`.
+- Vitest 4.1.11 package.json SHA256
+  `a28126d97bcaf567da5bed69443b7f3bcd9a7a8c38c8b66e554686b6bb2c10e0`, `vitest.mjs`
+  SHA256 `39db22f579acf5639bbb17a261408debbde03f4692c0c439e77e7f13aeba74d6`.
+- Vite 8.2.2 package.json SHA256
+  `4e41dd20c7a12e7e70915b235c0bf5b5158ec6709c1390804128af0867d6d6d9`,
+  `dist/node/index.js` SHA256
+  `c7ea52906f843318d7971209ce62bd24bab60590275e8f415c5564fa35cb82dc`, resolved
+  only from the Vitest closure under `<H>/node_modules/.pnpm`.
+- pnpm 9.15.4 identity per the Reliability HCB input; the fixture does not invoke pnpm.
 
 ## Case matrix retained
 
-30 prior cases plus the added linked-root branch-drift case (31 total): genuine
-ordinary/linked roots and descendants; paired B root-positive / B descendant
-`missing_git_metadata` / C descendant success; non-repo; persisted/effective/
-provider/workspace-binding and branch refusals; authoritative A/B; matching/
-missing/mismatched origin; nested/direct nested; inside/escaping symlinks;
-divergent/unresolved/ancestor/exact/behind pins; ordinary+linked direct-`.git`
-bypass and fake empty/malformed `.git`. Eleven C predicted-red assertions and the
-inherited B direct-`.git` reds remain explicit security findings, not waivers.
+31 rows: 30 prior cases plus `branch.linked-root-drift.refuse`; 11 candidate
+predicted-red and 5 base predicted-red security assertions. Base direct-`.git` red
+rows remain security findings, not all-green requirements. Paired base root-positive,
+base descendant `missing_git_metadata`, and candidate descendant success preserved.
 
 ## Token templates (not execution permission)
 
-Both run from H. F = corrected host commit; M = manifest SHA256; N = certified
-Node absolute path. All are pending Verification/publication inputs and must not
-be guessed.
+F = corrected host commit; M = manifest SHA256 (above); N = certified Node path.
+All are pending Verification binding.
 
 ```text
 /home/nigel/.local/bin/mem-bounded 4G --estimate 600 --reserve 180 --run-budget 1800 --max-duration 600 --product-sha 29bf67512aabd7b461a30e546c195e28c37f219e --cases the-560-validator-independent-candidate -- <N> <H>/server/src/__tests__/frozen-validator-bootstrap.mjs --role candidate --host-sha <F> --manifest-sha256 <M> --node <N>
@@ -123,23 +101,19 @@ Child argv: `<N> --import <H>/server/src/__tests__/frozen-validator-preload.mjs
 <H>/server/src/__tests__/frozen-validator.vitest.config.mjs --pool=forks
 --maxWorkers=1 --no-file-parallelism
 <H>/server/src/__tests__/frozen-validator-independent.test.ts`.
-Pinned Vitest 4.1.11 exposes no `minWorkers`.
 
-## Unresolved inputs and honest limits
+## Honest limits
 
 - Not executed. No fixture, Vitest, Vite, helper, install, build or product load.
-- F, M and N are not yet published/certified; the templates are not literal.
-- H has no proved installed dependency closure (Vite/Vitest/db/shared/adapter-utils/
-  runner/native). Full third-party, native and conditional-export resolution and
-  the host bootstrap/preload/loader graphs remain UNPROVED. Reliability owns the
-  bounded host/base dependency preparation after corrected pins.
-- Case 13 (`branch.descendant-root.refuse`) reports the wrapper
-  `git_worktree_branch_mismatch` with an underlying `wrong_repository_root`, recorded
-  honestly; the new drift case proves the true `branch_mismatch` path.
-- The run-owned scratch must not itself be inside a Git repository.
+- F and M prime are published; N and the detached parent-death containment remain
+  explicitly held prerequisites. `parentDeathContainment` is `unproved` and the
+  runtime supervision gate fails closed.
+- Full third-party/native/conditional export and workspace dependency closure
+  remains owned by [THE-563](/THE/issues/THE-563); this design does not certify it.
+- The ledger traces are illustrative static arithmetic, not measured Git totals.
 
 ## Rollback
 
 Revert the task branch commit or delete the added host files. No product source,
-policy, infrastructure, frozen candidate/base byte or installed dependency is
+frozen candidate/base byte, policy, infrastructure or installed dependency is
 modified. C/B remain immutable.
