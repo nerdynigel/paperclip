@@ -257,7 +257,20 @@ async function awaitTerminal({ rescueMode, deadlineMs, streams }) {
       if (rescueMode === "kill-owned-group" && live.length > 0 && !rescued) {
         rescued = true;
         record({ type: "observer-rescue", people: live.length });
-        for (const entry of live) signalOwned(entry.pid, "SIGKILL");
+        /* Kill only recorded, starttime-verified owned process groups. */
+        const groups = new Set();
+        for (const entry of live) {
+          if (groups.has(entry.pgid)) continue;
+          groups.add(entry.pgid);
+          const stillLive = procStat(entry.pid);
+          if (stillLive && stillLive.starttime === entry.starttime) {
+            try {
+              process.kill(-entry.pgid, "SIGKILL");
+            } catch {
+              /* group already gone */
+            }
+          }
+        }
         /* one more bounded wait for the rescue */
         const rescueDeadline = Date.now() + LIMITS.reapDeadlineMs;
         while (Date.now() < rescueDeadline) {

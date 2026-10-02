@@ -12,7 +12,7 @@ supersedes the V4-residual host bytes at `0cd724f789ce48d495e8b22e5a9b413b6b942e
 corrected host commit is `F'`; the corrected manifest SHA256 is
 `M' = d2ccdee9b1a31c64ee6361140c5e7c2e0f86f7b82ebe2755579640c7a05715d0`. F'/Q full
 commit SHAs and paths are published in the THE-574 thread and PR3 head readback;
-this document is carried by the single task commit `F'`.
+this document is carried by the task branch head `F'`.
 
 It implements the V4 corrective contract
 ([corrective-contract-v1](/THE/issues/THE-571#document-corrective-contract-v1),
@@ -129,7 +129,7 @@ PASS.
 
 | Q file | Git blob | SHA256 |
 | --- | --- | --- |
-| `probe-observer.mjs` | `f560a4ebe484e9905e9a7364e4c072dbe8c42af7` | `4aa06a6d18894cd82cb9e1eb4e1c6e00212ab91aef03d8f1a29ec0c5887d11c2` |
+| `probe-observer.mjs` | `e7f6aa07f21d13bc7efaeca0aac7ff67f1e74c3c` | `5ef7d4e5f8c635ed61c8e39abaf5e34869c585b8883e4f9336ac3163d85a7e5b` |
 | `probe-surrogate-supervisor.mjs` | `1f8508e622bf0cf85ab5e469684a48ed935eb2b2` | `5905d2afaee34dd64e111fa57736e2bc30ef42559c7160b5aa8bee0c5f4890f4` |
 | `probe-surrogate-child.mjs` | `ac6fcaf3e7255cc89a2c402a746aadb5f4c1c93d` | `030da657ac187fca83983a11a12cb506b47f562300327adc840ba2686b4ff331` |
 | `probe-worker-smoke.test.mjs` | `22b6a9896ce4cfd787978652dda29fe986a674a3` | `02cd77dd79ac46090920ae9249f87ac5b6637ef183e127f76c2bb527df26cd6d` |
