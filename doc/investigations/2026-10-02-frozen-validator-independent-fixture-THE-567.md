@@ -12,7 +12,10 @@ checkpoints](/THE/issues/THE-575#document-independent-adverse-checkpoint-c0a7d4a
 (`c0a7d4a8cbdd95088c7fa84ca9948d7c93c55613`) and
 [d92e672a](/THE/issues/THE-575#document-independent-adverse-checkpoint-d92e672a)
 (`d92e672a2437bf906912629282288f3d6ce2b493`) plus the [Chief correction
-handoff](/THE/issues/THE-574#document-chief-q-correction-handoff). It supersedes
+handoff](/THE/issues/THE-574#document-chief-q-correction-handoff). The current Q′
+revision additionally implements the Chief-accepted, remotely published
+[THE-581 correction contract RC-1..RC-4](/THE/issues/THE-581#document-q-correction-contract-f038eae8)
+(Homelab PR28 `ff72966…`). It supersedes
 the V4-residual host bytes at `0cd724f789ce48d495e8b22e5a9b413b6b942ecf`
 (M `2aafd0a369f527326b7f19adb9eb03b4b8b6a8457c8e7aa467c0b2f38dfc8195`). The
 corrected host commit is `F‴`; the corrected manifest SHA256 is
@@ -136,8 +139,8 @@ PASS.
 
 | Q file | Git blob | SHA256 |
 | --- | --- | --- |
-| `probe-observer.mjs` | `d211ed737ea34083d75b0155d902bbfa962afa02` | `4929a79ff9efb6b98fa9680d667c98e7d471125ec7b479f8baadf602324f58f1` |
-| `probe-surrogate-supervisor.mjs` | `b53e465151f69e8924e7168006e356a96d15d1e7` | `5631a7bcf1825f1fe01056d09cf828e95eef5c3de1bd41ece7a45014f47ed4e0` |
+| `probe-observer.mjs` | `f8de97ba09a242e96c79b0c97829728d06095d9e` | `c111f82a66c9f4ac493ef47e7923a440e3c6ff100f35d54ac6c1c05c1f4f81a4` |
+| `probe-surrogate-supervisor.mjs` | `b2a30883f1cf9e9486273d43de269eb232b5c406` | `77331c89f2257a28cd01d5d731939cc61a1f8e5022dd7d2a2279048f99810025` |
 | `probe-surrogate-child.mjs` | `ac6fcaf3e7255cc89a2c402a746aadb5f4c1c93d` | `030da657ac187fca83983a11a12cb506b47f562300327adc840ba2686b4ff331` |
 | `probe-worker-smoke.test.mjs` | `22b6a9896ce4cfd787978652dda29fe986a674a3` | `02cd77dd79ac46090920ae9249f87ac5b6637ef183e127f76c2bb527df26cd6d` |
 | `probe-worker-smoke.vitest.config.mjs` | `016bda6c17f377156069fe1eeba925b63ce1837a` | `21560612f38e6fdda80fe6800395068f48871e5389be2d8ea0bf8d832c8f299a` |
@@ -187,6 +190,33 @@ before `kill(-pgid)` cannot eliminate a PID/PGID-reuse race between the check an
 the signal; no pidfd is available to this probe. This is a static limitation, not
 a runtime proof.
 
+## Q′ corrections against the accepted THE-581 contract (RC-1..RC-4)
+
+This revision implements the Chief-reviewed, remotely published
+[q-correction-contract-f038eae8](/THE/issues/THE-581#document-q-correction-contract-f038eae8)
+(Homelab PR28, full pushed SHA `ff72966413f55850e8ce7660da2e7ef9160e896f`). Q
+changes only; host F/M bytes are unchanged. The new source commit that carries
+Q′ is reported with its full SHA in the THE-574 thread and PR3 readback.
+
+| Contract | Correction | Path |
+| --- | --- | --- |
+| RC-1 supervisor terminal ≤2 s incl. 500 ms | one absolute `D = proofStart + 2000`; `SIGKILL` at `min(proofStart+500, D)`; poll sleeps never past `D`; at `D` returns the measured verdict with no post-deadline await; no signal without full member verification | `probe-surrogate-supervisor.mjs` `terminalProof` |
+| RC-2 reserved bounded cleanup inside hard 10 s | hard trigger at `t0+8000` reserves the 10 s tail; `rescueAndReap()` used by every failure/residual path; single `finalize` clamp `min(deadlineAt ?? now+2000, now+2000, hardDeadlineAt)`; normal-close single 2 s, bootstrap-kill kill before the last 2 s; pipe closure from `close`, not `destroyed` | `probe-observer.mjs` `rescueAndReap`/`finalize`/`awaitTerminal` |
+| RC-3 numeric fail-closed ownership | numeric `starttime` parsing; `/proc` read errors latch `unknownVisibility` (never "no members"); adoption only by recorded PID+starttime+PGID or fresh ancestry; reuse detection; group signal only when every visible member verifies; signal revalidation immediately before each kill | `probe-observer.mjs` `procStat`/`visibleMembers`/`groupFullyVerified`/`killOwnedGroups`; `probe-surrogate-supervisor.mjs` `visibleMembers`/`groupFullyVerified` |
+| RC-4 canonical unique scratch and ≤4 MiB every write | canonical/realpath/ownership/mode checks; exclusive non-recursive `mkdir`; `markerReserveBytes` reserved and re-checked; `O_CREAT\|O_EXCL\|O_WRONLY\|O_NOFOLLOW` evidence writes; symlink inside `probe/` is a layout failure; HOME/TMPDIR measurable | `probe-observer.mjs` scratch setup/`measureTreeBytes`/`writeEvidence`/`writeFileNoFollow` |
+
+Path coverage: normal close and bootstrap-only death (self-expiry vs rescue),
+setup/negative limits, output/row/process/scratch ceilings, open pipes, deadline
+races and separately-labelled observer rescue are mapped in the contract §3 and
+implemented here. `terminalSuccess` requires `!failure`, `!unknownOwnership`,
+`!unknownVisibility`, `!scratchLayoutFailure`, measured scratch ≤4 MiB, evidence
+written and exit 0; rescue is never positive containment.
+
+Documented remainder (UNPROVED, not a waiver): RC-3 check-to-signal atomicity is
+not race-free with Node built-ins (no pidfd/cgroup); adversarial child growth
+beyond 4 MiB is detectable but not preventable with built-ins — success requires
+the measured cap, so no above-cap success is reported.
+
 ## Criterion-to-line map (THE-574, acceptance 3)
 
 | Acceptance | Implemented at |
@@ -230,6 +260,17 @@ Changed Q only (host/M‴ unchanged): `probe-observer.mjs`
 (`d211ed737ea34083d75b0155d902bbfa962afa02` /
 `4929a79ff9efb6b98fa9680d667c98e7d471125ec7b479f8baadf602324f58f1`). All other Q
 and host bytes unchanged.
+
+### Q′ vs F‴ (`f038eae8`) — THE-581 RC-1..RC-4
+
+Changed Q only (host/M unchanged): `probe-observer.mjs`
+(`f8de97ba09a242e96c79b0c97829728d06095d9e` /
+`c111f82a66c9f4ac493ef47e7923a440e3c6ff100f35d54ac6c1c05c1f4f81a4`) and
+`probe-surrogate-supervisor.mjs`
+(`b2a30883f1cf9e9486273d43de269eb232b5c406` /
+`77331c89f2257a28cd01d5d731939cc61a1f8e5022dd7d2a2279048f99810025`). Unchanged Q:
+`probe-preload.mjs`, `probe-surrogate-child.mjs`, `probe-worker-smoke.test.mjs`,
+`probe-worker-smoke.vitest.config.mjs`. F/M host pins and M `d2ccdee9…` unchanged.
 
 
 

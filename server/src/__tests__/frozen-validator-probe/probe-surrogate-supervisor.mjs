@@ -1,5 +1,5 @@
 /**
- * Frozen-validator Q probe — disposable surrogate supervisor (THE-574, F″ correction).
+ * Frozen-validator Q probe — disposable surrogate supervisor (THE-574, Q′ = RC-1/RC-3).
  *
  * SOURCE-ONLY PROPOSAL. Not installable authority and not a runtime PASS. This
  * file is a separate pinned probe source, deliberately disjoint from the frozen
@@ -8,12 +8,15 @@
  * grandchild) with the packet graph and relays child messages to the observer
  * over the observer-supplied IPC channel.
  *
- * Corrections at F″ (THE-575 adverse rows): bind the child to PID/starttime/
- * current PGID and ancestry before any signal; discover owned group membership
- * independently of a live group leader; terminal requires no live owned
- * descendant AND stdio close, and a child exit never cancels group escalation
- * or prematurely scores success; enforce a single <=2s reap bound and 500ms
- * TERM/KILL. Parent-death containment remains UNPROVED and is never positive.
+ * Implements the THE-581 accepted correction contract:
+ *  RC-1 one absolute terminal-proof deadline D = proofStart + 2000 ms, with the
+ *       500 ms TERM/KILL escalation scheduled at min(proofStart+500, D); no
+ *       post-D awaited kill or grace; a post-D signal is synchronous, freshly
+ *       identity-revalidated, recorded and never terminal.
+ *  RC-3 numeric /proc parsing, visibility errors latched (never "no members"),
+ *       recorded-identity/ancestry verification of every visible group member,
+ *       reuse detection, and no signal without full verification.
+ * The identity-check -> group-signal race remains explicitly UNPROVED.
  */
 
 import { spawn } from "node:child_process";
@@ -46,31 +49,54 @@ function send(message) {
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+let unknownVisibility = false;
+let unknownOwnership = false;
+/* returns object | null (gone) | undefined (unknown visibility) */
 function procStat(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   let raw;
   try {
     raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    unknownVisibility = true;
+    return undefined;
   }
   const close = raw.lastIndexOf(")");
-  if (close < 0) return null;
+  if (close < 0) {
+    unknownVisibility = true;
+    return undefined;
+  }
   const fields = raw.slice(close + 2).trim().split(/\s+/);
-  return {
-    state: fields[0],
-    ppid: Number.parseInt(fields[1], 10),
-    pgid: Number.parseInt(fields[2], 10),
-    starttime: fields[19],
-  };
+  const starttime = Number.parseInt(fields[19], 10);
+  if (!Number.isSafeInteger(starttime)) {
+    unknownVisibility = true;
+    return undefined;
+  }
+  return { state: fields[0], ppid: Number.parseInt(fields[1], 10), pgid: Number.parseInt(fields[2], 10), starttime, starttimeRaw: fields[19] };
+}
+function procList() {
+  let entries;
+  try {
+    entries = fs.readdirSync("/proc");
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    unknownVisibility = true;
+    return null;
+  }
+  return entries.filter((name) => /^[0-9]+$/.test(name)).map((name) => Number.parseInt(name, 10));
 }
 
 const work = path.resolve(process.env.PROBE_WORK_DIR ?? ".");
-fs.mkdirSync(work, { recursive: true, mode: 0o700 });
+for (const dir of [work, path.join(work, "home"), path.join(work, "tmp")]) {
+  try {
+    fs.mkdirSync(dir, { recursive: false, mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+}
 const home = path.join(work, "home");
 const tmp = path.join(work, "tmp");
-fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
 
 const closedProbeEnv = Object.freeze({
   PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -92,10 +118,11 @@ const child = spawn(NODE, [CHILD], {
   shell: false,
 });
 const record = procStat(child.pid);
-if (!record || record.ppid !== process.pid || record.pgid !== child.pid) {
+if (record === undefined || record === null || record.ppid !== process.pid || record.pgid !== child.pid) {
   send({ type: "supervisor-error", code: "CHILD_ANCESTRY", child: child.pid ?? null });
   process.exit(3);
 }
+const grandchildRecords = new Map();
 send({
   type: "supervisor-child",
   supervisor: process.pid,
@@ -121,31 +148,55 @@ child.stderr.on("close", () => {
   stderrClosed = true;
 });
 
-/* Owned group membership is discovered from /proc by PGID, independent of a
- * live leader; only members started at/after the recorded leader are admitted. */
-function groupMembers() {
+/* RC-3: every visible member must verify by recorded match or fresh ancestry. */
+function visibleMembers() {
+  const list = procList();
+  if (list === null) return null;
   const members = [];
-  let entries;
-  try {
-    entries = fs.readdirSync("/proc");
-  } catch {
-    return members;
-  }
-  for (const name of entries) {
-    if (!/^[0-9]+$/.test(name)) continue;
-    const pid = Number.parseInt(name, 10);
+  for (const pid of list) {
     const stat = procStat(pid);
-    if (!stat || stat.pgid !== child.pid) continue;
-    if (stat.starttime < record.starttime) continue;
-    members.push({ pid, ppid: stat.ppid, pgid: stat.pgid, starttime: stat.starttime });
+    if (stat === undefined) return null;
+    if (stat === null) continue;
+    if (stat.pgid !== child.pid) continue;
+    members.push({ pid, ppid: stat.ppid, pgid: stat.pgid, starttime: stat.starttime, starttimeRaw: stat.starttimeRaw });
   }
   return members;
 }
-function groupOwned() {
-  return groupMembers().length > 0;
+function identityMatch(member) {
+  if (member.pid === child.pid) return member.starttime === record.starttime && member.pgid === record.pgid;
+  const saved = grandchildRecords.get(member.pid);
+  return Boolean(saved) && saved.starttime === member.starttime && saved.pgid === member.pgid;
+}
+function ancestryToChild(pid) {
+  let current = pid;
+  for (let depth = 0; depth < 12 && current > 1; depth += 1) {
+    const stat = procStat(current);
+    if (stat === undefined || stat === null) return false;
+    if (current === child.pid) return true;
+    current = stat.ppid;
+  }
+  return false;
+}
+function groupFullyVerified() {
+  const members = visibleMembers();
+  if (members === null) return false;
+  for (const member of members) {
+    if (identityMatch(member)) continue;
+    if (ancestryToChild(member.pid)) continue;
+    unknownOwnership = true;
+    return false;
+  }
+  return true;
+}
+function groupGone() {
+  const members = visibleMembers();
+  if (members === null) return false; /* visibility unknown is not "gone" */
+  return members.length === 0;
 }
 function signalGroup(signal) {
-  if (!groupOwned()) return false;
+  if (!groupFullyVerified()) return false;
+  const members = visibleMembers();
+  if (members === null || members.length === 0) return false;
   try {
     process.kill(-child.pid, signal);
     return true;
@@ -155,27 +206,29 @@ function signalGroup(signal) {
 }
 
 let terminating = false;
+/* RC-1: single absolute deadline; 500 ms escalation inside it; no post-D await. */
 async function terminalProof(reason) {
-  const deadline = Date.now() + LIMITS.reapDeadlineMs;
-  let killTimer = null;
-  killTimer = setTimeout(() => signalGroup("SIGKILL"), LIMITS.termKillGraceMs);
-  while (Date.now() < deadline) {
-    if (!groupOwned() && stdoutClosed && stderrClosed) {
-      clearTimeout(killTimer);
-      return { terminal: true, groupGone: true, stdioClosed: true, residual: false, reason };
+  const proofStart = Date.now();
+  const deadline = proofStart + LIMITS.reapDeadlineMs;
+  const killAt = Math.min(proofStart + LIMITS.termKillGraceMs, deadline);
+  let killSent = false;
+  for (;;) {
+    if (groupGone() && stdoutClosed && stderrClosed) {
+      return { terminal: true, groupGone: true, stdioClosed: true, residual: false, visibilityUnknown: unknownVisibility, reason };
     }
-    await delay(25);
+    const now = Date.now();
+    if (!killSent && now >= killAt) {
+      killSent = true;
+      signalGroup("SIGKILL"); /* synchronous, freshly revalidated, recorded by caller */
+    }
+    if (now >= deadline) {
+      const gone = groupGone();
+      const stdio = stdoutClosed && stderrClosed;
+      return { terminal: gone && stdio && !unknownVisibility, groupGone: gone, stdioClosed: stdio, residual: !gone, visibilityUnknown: unknownVisibility, reason };
+    }
+    /* Never sleep past the absolute deadline (RC-1 <=2000 ms). */
+    await delay(Math.min(LIMITS.pollIntervalMs, Math.max(0, deadline - now)));
   }
-  signalGroup("SIGKILL");
-  const grace = Date.now() + LIMITS.termKillGraceMs;
-  while (Date.now() < grace) {
-    if (!groupOwned() && stdoutClosed && stderrClosed) break;
-    await delay(25);
-  }
-  clearTimeout(killTimer);
-  const groupGone = !groupOwned();
-  const stdioClosed = stdoutClosed && stderrClosed;
-  return { terminal: groupGone && stdioClosed, groupGone, stdioClosed, residual: !groupGone, reason };
 }
 async function terminateAndReport(reason) {
   if (terminating) return;
@@ -194,6 +247,12 @@ async function terminateAndReport(reason) {
 child.on("message", (message) => {
   if (!message || typeof message !== "object") return;
   if (message.type === "ready") {
+    const gcStat = procStat(message.grandchild);
+    if (gcStat === undefined) {
+      unknownVisibility = true;
+    } else if (gcStat !== null) {
+      grandchildRecords.set(message.grandchild, { starttime: gcStat.starttime, pgid: gcStat.pgid });
+    }
     send({
       type: "child-ready",
       child: message.child,
