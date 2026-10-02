@@ -135,6 +135,25 @@ async function runGit(cwd: string, args: string[]) {
   await execFile("git", args, { cwd });
 }
 
+async function runGitStdout(cwd: string, args: string[]) {
+  const { stdout } = await execFile("git", args, { cwd });
+  return stdout.trim();
+}
+
+async function createGitRepositoryWithSubdirectory(remoteUrl?: string) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-containment-"));
+  await runGit(root, ["init"]);
+  await runGit(root, ["config", "user.email", "test@example.com"]);
+  await runGit(root, ["config", "user.name", "Paperclip Test"]);
+  await fs.writeFile(path.join(root, "README.md"), "initial\n", "utf8");
+  await runGit(root, ["add", "README.md"]);
+  await runGit(root, ["commit", "-m", "Initial commit"]);
+  if (remoteUrl) await runGit(root, ["remote", "add", "origin", remoteUrl]);
+  const subdirectory = path.join(root, "server");
+  await fs.mkdir(subdirectory, { recursive: true });
+  return { root, subdirectory };
+}
+
 async function createGitCheckout(options: { withRemote: boolean }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-push-preflight-"));
   await runGit(root, ["init"]);
@@ -458,6 +477,202 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
         }),
       ),
     ).resolves.toBeUndefined();
+  });
+
+  describe("descendant git workspace launches", () => {
+    it("accepts a genuine descendant directory of a linked worktree root", async () => {
+      const mainRepo = await createGitRepositoryWithSubdirectory();
+      const worktreeParent = await fs.mkdtemp(
+        path.join(os.tmpdir(), "paperclip-linked-worktree-"),
+      );
+      const worktreePath = path.join(worktreeParent, "workspace");
+      try {
+        await runGit(mainRepo.root, [
+          "worktree",
+          "add",
+          "-b",
+          "PAP-554-linked",
+          worktreePath,
+          "HEAD",
+        ]);
+        const subdirectory = path.join(worktreePath, "server");
+        await fs.mkdir(subdirectory, { recursive: true });
+        const headSha = await runGitStdout(worktreePath, ["rev-parse", "HEAD"]);
+        expect(
+          await fs.lstat(path.join(worktreePath, ".git")).then((entry) => entry.isFile()),
+        ).toBe(true);
+        expect(
+          await fs
+            .lstat(path.join(subdirectory, ".git"))
+            .then(() => true)
+            .catch(() => false),
+        ).toBe(false);
+
+        const input = buildWorkspaceValidationInput();
+        await expect(
+          assertGitSensitiveAdapterWorkspaceValid(
+            buildWorkspaceValidationInput({
+              resolvedWorkspace: buildResolvedWorkspace({
+                cwd: subdirectory,
+                repoRef: headSha,
+              }),
+              executionWorkspace: {
+                ...input.executionWorkspace,
+                baseCwd: subdirectory,
+                cwd: subdirectory,
+              },
+              persistedExecutionWorkspace: {
+                ...input.persistedExecutionWorkspace!,
+                cwd: subdirectory,
+              },
+            }),
+          ),
+        ).resolves.toBeUndefined();
+      } finally {
+        await fs.rm(mainRepo.root, { recursive: true, force: true });
+        await fs.rm(worktreeParent, { recursive: true, force: true });
+      }
+    });
+
+    it("still accepts the linked worktree root itself with direct .git metadata", async () => {
+      const repo = await createGitRepositoryWithSubdirectory();
+      try {
+        const headSha = await runGitStdout(repo.root, ["rev-parse", "HEAD"]);
+        const input = buildWorkspaceValidationInput();
+        await expect(
+          assertGitSensitiveAdapterWorkspaceValid(
+            buildWorkspaceValidationInput({
+              resolvedWorkspace: buildResolvedWorkspace({
+                cwd: repo.root,
+                repoRef: headSha,
+              }),
+              executionWorkspace: {
+                ...input.executionWorkspace,
+                baseCwd: repo.root,
+                cwd: repo.root,
+              },
+              persistedExecutionWorkspace: {
+                ...input.persistedExecutionWorkspace!,
+                cwd: repo.root,
+              },
+            }),
+          ),
+        ).resolves.toBeUndefined();
+      } finally {
+        await fs.rm(repo.root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a descendant whose containing repository is not the recorded repository", async () => {
+      const repo = await createGitRepositoryWithSubdirectory(
+        "https://github.com/example/actual.git",
+      );
+      try {
+        const input = buildWorkspaceValidationInput();
+        await expectWorkspaceValidationFailure(
+          buildWorkspaceValidationInput({
+            resolvedWorkspace: buildResolvedWorkspace({
+              cwd: repo.subdirectory,
+              repoUrl: "https://github.com/example/expected.git",
+            }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              baseCwd: repo.subdirectory,
+              cwd: repo.subdirectory,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              cwd: repo.subdirectory,
+            },
+          }),
+          "git_metadata_wrong_repository",
+          "expected git repository",
+        );
+      } finally {
+        await fs.rm(repo.root, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a descendant whose HEAD is not at the recorded pin", async () => {
+      const repo = await createGitRepositoryWithSubdirectory();
+      try {
+        const firstSha = await runGitStdout(repo.root, ["rev-parse", "HEAD"]);
+        await fs.writeFile(path.join(repo.root, "README.md"), "second\n", "utf8");
+        await runGit(repo.root, ["add", "README.md"]);
+        await runGit(repo.root, ["commit", "-m", "Second commit"]);
+        const secondSha = await runGitStdout(repo.root, ["rev-parse", "HEAD"]);
+        await runGit(repo.root, ["reset", "--hard", firstSha]);
+
+        const input = buildWorkspaceValidationInput();
+        await expectWorkspaceValidationFailure(
+          buildWorkspaceValidationInput({
+            resolvedWorkspace: buildResolvedWorkspace({
+              cwd: repo.subdirectory,
+              repoRef: secondSha,
+            }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              baseCwd: repo.subdirectory,
+              cwd: repo.subdirectory,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              cwd: repo.subdirectory,
+            },
+          }),
+          "git_metadata_wrong_pin",
+          "expected git workspace HEAD at pin",
+        );
+      } finally {
+        await fs.rm(repo.root, { recursive: true, force: true });
+      }
+    });
+
+    it("preserves the git worktree provider-ref guard for a descendant launch", async () => {
+      const mainRepo = await createGitRepositoryWithSubdirectory();
+      const worktreeParent = await fs.mkdtemp(
+        path.join(os.tmpdir(), "paperclip-provider-guard-worktree-"),
+      );
+      const worktreePath = path.join(worktreeParent, "workspace");
+      try {
+        await runGit(mainRepo.root, [
+          "worktree",
+          "add",
+          "-b",
+          "PAP-554-provider-guard",
+          worktreePath,
+          "HEAD",
+        ]);
+        const subdirectory = path.join(worktreePath, "server");
+        await fs.mkdir(subdirectory, { recursive: true });
+
+        const input = buildWorkspaceValidationInput();
+        await expectWorkspaceValidationFailure(
+          buildWorkspaceValidationInput({
+            resolvedWorkspace: buildResolvedWorkspace({ cwd: subdirectory }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              strategy: "git_worktree",
+              baseCwd: subdirectory,
+              cwd: subdirectory,
+              worktreePath,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              strategyType: "git_worktree",
+              providerType: "git_worktree",
+              cwd: subdirectory,
+              providerRef: worktreePath,
+            },
+          }),
+          "git_worktree_provider_ref_mismatch",
+          "expected git worktree",
+        );
+      } finally {
+        await fs.rm(mainRepo.root, { recursive: true, force: true });
+        await fs.rm(worktreeParent, { recursive: true, force: true });
+      }
+    });
   });
 });
 

@@ -2868,12 +2868,128 @@ export function isConfigurationIncompleteFailedRun(
   );
 }
 
-async function hasGitMetadata(cwd: string | null | undefined) {
-  const normalized = readNonEmptyString(cwd);
-  if (!normalized) return false;
+function readTrimmedNonEmptyString(value: unknown) {
+  const normalized = readNonEmptyString(value);
+  return normalized ? normalized.trim() : null;
+}
+
+async function resolveCanonicalPathForComparison(value: string) {
+  const resolved = path.resolve(value);
   return fs
-    .lstat(path.resolve(normalized, ".git"))
+    .realpath(resolved)
+    .then((realPath) => path.resolve(realPath))
+    .catch(() => resolved);
+}
+
+function isPathSameOrInside(parentPath: string, childPath: string) {
+  const relative = path.relative(
+    path.resolve(parentPath),
+    path.resolve(childPath),
+  );
+  return (
+    relative === "" ||
+    (relative.length > 0 &&
+      !relative.startsWith("..") &&
+      !path.isAbsolute(relative))
+  );
+}
+
+/**
+ * Classify a launch cwd against Git without trusting direct `.git` presence alone.
+ *
+ * `directMetadata` mirrors the legacy predicate (a `.git` file or directory directly
+ * under the cwd). When it is absent, Git's own discovery (`rev-parse --show-toplevel`)
+ * finds the nearest enclosing work tree, so a launch cwd that is a genuine descendant
+ * of a repository root is not misclassified as "no git metadata". Ancestor discovery
+ * stops at the nearest repository, so an outer unrelated repository is never accepted.
+ */
+async function inspectGitLaunchCwd(cwd: string): Promise<{
+  directMetadata: boolean;
+  containingRoot: string | null;
+  headSha: string | null;
+}> {
+  const normalized = path.resolve(cwd);
+  const directMetadata = await fs
+    .lstat(path.join(normalized, ".git"))
     .then((entry) => entry.isDirectory() || entry.isFile())
+    .catch(() => false);
+  if (directMetadata) {
+    return { directMetadata: true, containingRoot: null, headSha: null };
+  }
+  const topLevel = await execFile("git", ["rev-parse", "--show-toplevel"], {
+    cwd: normalized,
+  })
+    .then((result) => readTrimmedNonEmptyString(result.stdout))
+    .catch(() => null);
+  if (!topLevel) {
+    return { directMetadata: false, containingRoot: null, headSha: null };
+  }
+  const containingRoot = await resolveCanonicalPathForComparison(topLevel);
+  const headSha = await execFile("git", ["rev-parse", "HEAD"], {
+    cwd: normalized,
+  })
+    .then((result) => readTrimmedNonEmptyString(result.stdout))
+    .catch(() => null);
+  return { directMetadata: false, containingRoot, headSha };
+}
+
+async function resolveGitTopLevelForPath(value: string | null | undefined) {
+  const normalized = readNonEmptyString(value);
+  if (!normalized) return null;
+  const topLevel = await execFile("git", ["rev-parse", "--show-toplevel"], {
+    cwd: path.resolve(normalized),
+  })
+    .then((result) => readTrimmedNonEmptyString(result.stdout))
+    .catch(() => null);
+  return topLevel ? resolveCanonicalPathForComparison(topLevel) : null;
+}
+
+function isRemoteGitUrl(value: string) {
+  return /^[a-z+]+:\/\//i.test(value) || /^[^@/]+@[^:/]+:.+/.test(value);
+}
+
+function normalizeGitRemoteUrl(value: string) {
+  let normalized = value.trim();
+  const scpLike = !normalized.includes("://")
+    ? /^[^@/]+@([^:/]+):(.+)$/.exec(normalized)
+    : null;
+  if (scpLike) {
+    normalized = `${scpLike[1]}/${scpLike[2]}`;
+  } else {
+    normalized = normalized
+      .replace(/^[a-z+]+:\/\//i, "")
+      .replace(/^[^@/]+@/, "");
+  }
+  return normalized.replace(/\.git$/i, "").replace(/\/+$/, "").toLowerCase();
+}
+
+async function resolveGitRefSha(
+  repoRoot: string,
+  ref: string | null | undefined,
+) {
+  const normalized = readNonEmptyString(ref);
+  if (!normalized) return null;
+  return execFile(
+    "git",
+    ["rev-parse", "--verify", "--quiet", `${normalized}^{commit}`],
+    { cwd: repoRoot },
+  )
+    .then((result) => readTrimmedNonEmptyString(result.stdout))
+    .catch(() => null);
+}
+
+async function isCommitAnAncestorOfHead(input: {
+  repoRoot: string;
+  ancestorSha: string;
+  headSha: string;
+}) {
+  if (input.ancestorSha === input.headSha) return true;
+  return execFile(
+    "git",
+    ["merge-base", "--is-ancestor", input.ancestorSha, input.headSha],
+    { cwd: input.repoRoot },
+  )
+    .then(() => true)
     .catch(() => false);
 }
 
@@ -3125,7 +3241,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     reason: string,
     message: string,
     extra: Record<string, unknown> = {},
-  ) => {
+  ): never => {
     throw new WorkspaceValidationFailure(message, {
       workspaceValidation: {
         reason,
@@ -3246,15 +3362,115 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     );
   }
 
-  if (
-    workspaceExpectation &&
-    effectiveCwd &&
-    !(await hasGitMetadata(effectiveCwd))
-  ) {
-    fail(
-      "missing_git_metadata",
-      `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
-    );
+  if (workspaceExpectation && effectiveCwd) {
+    const launchInspection = await inspectGitLaunchCwd(effectiveCwd);
+    if (!launchInspection.directMetadata) {
+      const containingRoot = launchInspection.containingRoot;
+      if (!containingRoot) {
+        return fail(
+          "missing_git_metadata",
+          `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata and is not inside a git repository.`,
+        );
+      }
+      // Containment: the launch cwd must genuinely live inside the repository Git
+      // discovers for it. Git resolves the nearest enclosing work tree, so this is
+      // a guard against symlink/canonicalization drift rather than a second lookup.
+      const canonicalLaunchCwd =
+        await resolveCanonicalPathForComparison(effectiveCwd);
+      if (!isPathSameOrInside(containingRoot, canonicalLaunchCwd)) {
+        fail(
+          "git_metadata_wrong_repository",
+          `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but the discovered repository root "${containingRoot}" does not contain the launch cwd "${effectiveCwd}".`,
+          { containingGitRoot: containingRoot },
+        );
+      }
+
+      // Identity: the containing repository must be the one the recorded persisted /
+      // resolved workspace lives in. This prevents accepting an arbitrary ancestor
+      // repository that merely happens to contain the launch cwd.
+      const expectedWorkspaceCwds = [
+        input.persistedExecutionWorkspace?.cwd,
+        input.persistedExecutionWorkspace?.providerRef,
+        input.executionWorkspace.worktreePath,
+        input.executionWorkspace.baseCwd,
+        input.resolvedWorkspace.cwd,
+      ];
+      const expectedRoots = (
+        await Promise.all(
+          expectedWorkspaceCwds.map((candidate) =>
+            resolveGitTopLevelForPath(candidate),
+          ),
+        )
+      ).filter((root): root is string => Boolean(root));
+      if (
+        expectedRoots.length === 0 ||
+        !expectedRoots.some((root) => sameResolvedPath(root, containingRoot))
+      ) {
+        fail(
+          "git_metadata_wrong_repository",
+          `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType} in the recorded workspace repository, but "${effectiveCwd}" belongs to repository root "${containingRoot}".`,
+          {
+            containingGitRoot: containingRoot,
+            expectedGitRoots: expectedRoots,
+          },
+        );
+      }
+
+      // Remote identity (best effort): when the workspace declares a remote repo URL,
+      // the containing checkout's origin must point at the same repository.
+      const declaredRepoUrl =
+        readNonEmptyString(input.resolvedWorkspace.repoUrl) ??
+        readNonEmptyString(input.persistedExecutionWorkspace?.repoUrl);
+      if (declaredRepoUrl && isRemoteGitUrl(declaredRepoUrl)) {
+        const originUrl = await execFile(
+          "git",
+          ["config", "--get", "remote.origin.url"],
+          { cwd: containingRoot },
+        )
+          .then((result) => readTrimmedNonEmptyString(result.stdout))
+          .catch(() => null);
+        if (
+          originUrl &&
+          normalizeGitRemoteUrl(originUrl) !==
+            normalizeGitRemoteUrl(declaredRepoUrl)
+        ) {
+          fail(
+            "git_metadata_wrong_repository",
+            `Issue ${issue.identifier ?? issue.id} expected git repository "${declaredRepoUrl}", but the containing repository root "${containingRoot}" points at "${originUrl}".`,
+            { containingGitRoot: containingRoot, declaredRepoUrl, originUrl },
+          );
+        }
+      }
+
+      // Expected pin: a declared workspace ref must be resolvable at the containing
+      // repository and the checkout must be at (or ahead of) it. A ref that cannot be
+      // resolved locally is not treated as a mismatch here.
+      const expectedPin =
+        readNonEmptyString(input.resolvedWorkspace.repoRef) ??
+        readNonEmptyString(input.persistedExecutionWorkspace?.baseRef);
+      if (expectedPin && launchInspection.headSha) {
+        const pinSha = await resolveGitRefSha(containingRoot, expectedPin);
+        if (
+          pinSha &&
+          !(await isCommitAnAncestorOfHead({
+            repoRoot: containingRoot,
+            ancestorSha: pinSha,
+            headSha: launchInspection.headSha,
+          }))
+        ) {
+          fail(
+            "git_metadata_wrong_pin",
+            `Issue ${issue.identifier ?? issue.id} expected git workspace HEAD at pin "${expectedPin}" (${pinSha}) for ${input.adapterType}, but "${effectiveCwd}" is at "${launchInspection.headSha}".`,
+            {
+              containingGitRoot: containingRoot,
+              expectedPin,
+              expectedPinSha: pinSha,
+              actualHeadSha: launchInspection.headSha,
+            },
+          );
+        }
+      }
+    }
   }
 
   const expectedManagedBranchName =
